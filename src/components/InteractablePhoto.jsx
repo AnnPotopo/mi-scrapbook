@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { RotateCw, Maximize2, Trash2, MessageSquareText, Calendar, Link as LinkIcon, MapPin } from 'lucide-react';
+import { RotateCw, Maximize2, Trash2, MessageSquareText, Calendar, Link as LinkIcon, MapPin, Edit2 } from 'lucide-react';
 
-export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isEditMode, isSelected, onSelect, onBringToFront, onClickView }) {
+export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isEditMode, isSelected, onSelect, onBringToFront, onClickView, onEditClick }) {
     const [interaction, setInteraction] = useState(null);
     const [localTransform, setLocalTransform] = useState({
         x: photo.x, y: photo.y, width: photo.width, rotation: photo.rotation
@@ -56,7 +56,7 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
             }
             else if (interaction === 'resize') {
                 const moveAvg = (dx + dy) / 2;
-                const newWidth = Math.max(50, s.width + moveAvg); // Permitir tamaños más pequeños para hilos
+                const newWidth = Math.max(50, s.width + moveAvg);
                 setLocalTransform(prev => ({ ...prev, width: newWidth }));
             }
             else if (interaction === 'rotate') {
@@ -93,6 +93,11 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
 
     const isLinkable = (photo.type === 'link' || photo.type === 'location') && photo.url;
 
+    // Configuración específica de la foto
+    const frameColor = photo.frameColor || '#faf9f5';
+    const tapeStyle = photo.tapeStyle || 'top';
+    const tapeGradient = 'linear-gradient(to right, rgba(255,255,255,0.1), rgba(255,255,255,0.6))';
+
     return (
         <div
             ref={containerRef}
@@ -101,7 +106,7 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                 width: `${localTransform.width}px`, transform: `rotate(${localTransform.rotation}deg)`,
                 zIndex: photo.zIndex || 1, touchAction: 'none'
             }}
-            className={`group ${isEditMode ? 'cursor-move' : (isLinkable ? 'cursor-pointer hover:scale-105 transition-transform' : 'cursor-pointer')}`}
+            className={`group ${isEditMode ? 'cursor-move' : (isLinkable ? 'cursor-pointer hover:scale-105 active:scale-95 transition-all duration-200' : 'cursor-pointer hover:scale-[1.02] transition-transform duration-300')}`}
             onPointerDown={(e) => {
                 if (isEditMode) handlePointerDown('drag', e);
                 else {
@@ -110,13 +115,28 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                 }
             }}
         >
+            {/* FOTOGRAFÍA CON MARCO Y CINTA */}
             {(!photo.type || photo.type === 'image') && (
-                <div className={`bg-[#faf9f5] p-3 pb-12 rounded-sm border relative transition-all duration-300 ${isEditMode && interaction === 'drag' ? 'border-amber-300 shadow-2xl scale-105' : 'border-stone-200 shadow-xl group-hover:shadow-2xl'}`}>
-                    <div className="absolute -top-3 left-1/2 -translate-x-1/2 w-16 h-6 bg-white/40 backdrop-blur-md border border-white/40 shadow-sm rounded-sm transform rotate-2 z-10 opacity-80" style={{ backgroundImage: 'linear-gradient(to right, rgba(255,255,255,0.1), rgba(255,255,255,0.6))' }}></div>
-                    <img src={photo.src} alt="Álbum" className="w-full h-auto object-cover pointer-events-none rounded-sm border border-stone-200/60 shadow-inner" draggable="false" />
+                <div style={{ backgroundColor: frameColor }} className={`p-3 pb-12 rounded-sm border relative transition-all duration-300 ${isEditMode && interaction === 'drag' ? 'border-amber-300 shadow-2xl scale-105' : 'border-stone-200 shadow-xl group-hover:shadow-2xl'}`}>
+
+                    {/* Estilos de Cinta */}
+                    {tapeStyle === 'top' && <div className="absolute -top-3 left-1/2 -translate-x-1/2 w-16 h-6 bg-white/40 backdrop-blur-md border border-white/40 shadow-sm rounded-sm transform rotate-2 z-10 opacity-80" style={{ backgroundImage: tapeGradient }}></div>}
+
+                    {tapeStyle === 'corners' && (
+                        <>
+                            <div className="absolute -top-2 -left-3 w-10 h-5 bg-white/40 backdrop-blur-md shadow-sm rounded-sm transform -rotate-45 z-10 opacity-80" style={{ backgroundImage: tapeGradient }}></div>
+                            <div className="absolute -top-2 -right-3 w-10 h-5 bg-white/40 backdrop-blur-md shadow-sm rounded-sm transform rotate-45 z-10 opacity-80" style={{ backgroundImage: tapeGradient }}></div>
+                            <div className="absolute -bottom-2 -left-3 w-10 h-5 bg-white/40 backdrop-blur-md shadow-sm rounded-sm transform rotate-45 z-10 opacity-80" style={{ backgroundImage: tapeGradient }}></div>
+                            <div className="absolute -bottom-2 -right-3 w-10 h-5 bg-white/40 backdrop-blur-md shadow-sm rounded-sm transform -rotate-45 z-10 opacity-80" style={{ backgroundImage: tapeGradient }}></div>
+                        </>
+                    )}
+
+                    <img src={photo.src} alt="Álbum" className="w-full h-auto object-cover pointer-events-none rounded-sm border border-black/10 shadow-inner" draggable="false" />
+
+                    {/* Indicador de descripción (Solo visualización) */}
                     {!isEditMode && photo.description && (
-                        <div className="absolute bottom-3 left-0 w-full flex justify-center text-stone-400">
-                            <div className="flex items-center gap-1.5 bg-stone-100/80 px-3 py-1 rounded-full text-xs font-serif italic backdrop-blur-sm">
+                        <div className="absolute bottom-3 left-0 w-full flex justify-center text-stone-500">
+                            <div className="flex items-center gap-1.5 bg-white/80 px-3 py-1 rounded-full text-xs font-serif italic backdrop-blur-sm shadow-sm border border-stone-200/50">
                                 <MessageSquareText size={14} /> Leer recuerdo
                             </div>
                         </div>
@@ -124,6 +144,7 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                 </div>
             )}
 
+            {/* PEGATINAS EXISTENTES */}
             {photo.type === 'postit' && (
                 <div style={{ ...dynamicStyle, minHeight: '150px' }} className={`p-6 shadow-md font-serif text-xl border-t border-l relative transition-all duration-300 ${isEditMode && interaction === 'drag' ? 'scale-105 shadow-xl' : 'hover:shadow-lg'}`}>
                     <div className="absolute -top-3 left-1/2 -translate-x-1/2 w-14 h-5 bg-white/30 backdrop-blur-sm shadow-sm rounded-sm transform -rotate-2 z-10 opacity-70"></div>
@@ -149,18 +170,25 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                 </div>
             )}
 
-            {/* EMOJI REDIMENSIONABLE: Ahora su tamaño se basa en el ancho para que puedas estirarlo */}
             {photo.type === 'emoji' && (
                 <div style={{ fontSize: `${localTransform.width * 0.8}px` }} className="leading-none drop-shadow-xl select-none flex items-center justify-center">
                     {photo.content}
                 </div>
             )}
 
+            {/* CONTROLES DE EDICIÓN FLOTANTES */}
             {isEditMode && isSelected && (
                 <>
-                    <div onPointerDown={(e) => handlePointerDown('rotate', e)} className="absolute -top-12 left-1/2 -translate-x-1/2 bg-white/95 p-2.5 rounded-full shadow-lg border border-stone-100 cursor-grab text-blue-500 hover:bg-blue-50 hover:scale-110 transition-all z-50"><RotateCw size={18} strokeWidth={2.5} /></div>
-                    <div onPointerDown={(e) => handlePointerDown('resize', e)} className="absolute -bottom-5 -right-5 bg-white/95 p-2.5 rounded-full shadow-lg border border-stone-100 cursor-nwse-resize text-emerald-500 hover:bg-emerald-50 hover:scale-110 transition-all z-50"><Maximize2 size={18} strokeWidth={2.5} /></div>
-                    <div onPointerDown={(e) => { e.stopPropagation(); deletePhoto(photo.id); }} className="absolute -top-5 -right-5 bg-white/95 p-2.5 rounded-full shadow-lg border border-stone-100 cursor-pointer text-rose-500 hover:bg-rose-50 hover:scale-110 transition-all z-50"><Trash2 size={18} strokeWidth={2.5} /></div>
+                    <div onPointerDown={(e) => handlePointerDown('rotate', e)} className="absolute -top-12 left-1/2 -translate-x-1/2 bg-white/95 p-2.5 rounded-full shadow-lg border border-stone-100 cursor-grab text-blue-500 hover:bg-blue-50 hover:scale-110 active:scale-95 transition-all z-50"><RotateCw size={18} strokeWidth={2.5} /></div>
+
+                    {/* Nuevo Botón de Edición (Solo para Fotos o Editables) */}
+                    {(!photo.type || photo.type === 'image' || ['postit', 'date', 'link', 'location'].includes(photo.type)) && (
+                        <div onPointerDown={(e) => { e.stopPropagation(); onEditClick(photo); }} className="absolute -top-5 -left-5 bg-white/95 p-2.5 rounded-full shadow-lg border border-stone-100 cursor-pointer text-indigo-500 hover:bg-indigo-50 hover:scale-110 active:scale-95 transition-all z-50"><Edit2 size={18} strokeWidth={2.5} /></div>
+                    )}
+
+                    <div onPointerDown={(e) => handlePointerDown('resize', e)} className="absolute -bottom-5 -right-5 bg-white/95 p-2.5 rounded-full shadow-lg border border-stone-100 cursor-nwse-resize text-emerald-500 hover:bg-emerald-50 hover:scale-110 active:scale-95 transition-all z-50"><Maximize2 size={18} strokeWidth={2.5} /></div>
+                    <div onPointerDown={(e) => { e.stopPropagation(); deletePhoto(photo.id); }} className="absolute -top-5 -right-5 bg-white/95 p-2.5 rounded-full shadow-lg border border-stone-100 cursor-pointer text-rose-500 hover:bg-rose-50 hover:scale-110 active:scale-95 transition-all z-50"><Trash2 size={18} strokeWidth={2.5} /></div>
+
                     <div className="absolute inset-0 border-2 border-dashed border-blue-500/80 pointer-events-none rounded-sm"></div>
                 </>
             )}
