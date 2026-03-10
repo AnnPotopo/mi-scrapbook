@@ -26,7 +26,7 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
-    const unsubAlbums = onSnapshot(collection(db, 'artifacts', appId, 'public', 'albums'), (snapshot) => {
+    const unsubAlbums = onSnapshot(collection(db, 'artifacts', appId, 'albums'), (snapshot) => {
       const loaded = [];
       snapshot.forEach(doc => {
         const data = doc.data();
@@ -36,7 +36,7 @@ export default function App() {
       setDbError(null);
     }, (error) => { if (error.code === 'permission-denied') setDbError('permissions'); });
 
-    const unsubPhotos = onSnapshot(collection(db, 'artifacts', appId, 'public', 'photos'), (snapshot) => {
+    const unsubPhotos = onSnapshot(collection(db, 'artifacts', appId, 'photos'), (snapshot) => {
       const loaded = [];
       snapshot.forEach(doc => loaded.push({ id: doc.id, ...doc.data() }));
       setPhotos(loaded);

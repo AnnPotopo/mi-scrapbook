@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { RotateCw, Maximize2, Trash2, MessageSquareText, StickyNote, Calendar, Link as LinkIcon } from 'lucide-react';
-import { POSTIT_COLORS } from '../utils';
+import { RotateCw, Maximize2, Trash2, MessageSquareText, Calendar, Link as LinkIcon, MapPin } from 'lucide-react';
 
-export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isEditMode, onBringToFront, onClickView }) {
+export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isEditMode, isSelected, onSelect, onBringToFront, onClickView }) {
     const [interaction, setInteraction] = useState(null);
     const [localTransform, setLocalTransform] = useState({
         x: photo.x, y: photo.y, width: photo.width, rotation: photo.rotation
@@ -24,7 +23,10 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
         if (!isEditMode) return;
         e.stopPropagation();
         e.preventDefault();
+
         onBringToFront(photo.id);
+        if (onSelect) onSelect();
+
         setInteraction(type);
 
         startState.current = {
@@ -54,7 +56,7 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
             }
             else if (interaction === 'resize') {
                 const moveAvg = (dx + dy) / 2;
-                const newWidth = Math.max(80, s.width + moveAvg);
+                const newWidth = Math.max(50, s.width + moveAvg); // Permitir tamaños más pequeños para hilos
                 setLocalTransform(prev => ({ ...prev, width: newWidth }));
             }
             else if (interaction === 'rotate') {
@@ -79,6 +81,18 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
         };
     }, [interaction, photo.id, updatePhoto]);
 
+    const dynamicStyle = {
+        backgroundColor: photo.bgColor || '#ffffff',
+        borderColor: photo.borderColor || '#e5e7eb',
+        color: photo.textColor || '#1f2937',
+        fontWeight: photo.isBold ? 'bold' : 'normal',
+        fontStyle: photo.isItalic ? 'italic' : 'normal',
+        borderWidth: photo.borderColor ? '2px' : '0px',
+        borderStyle: 'solid'
+    };
+
+    const isLinkable = (photo.type === 'link' || photo.type === 'location') && photo.url;
+
     return (
         <div
             ref={containerRef}
@@ -87,11 +101,11 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                 width: `${localTransform.width}px`, transform: `rotate(${localTransform.rotation}deg)`,
                 zIndex: photo.zIndex || 1, touchAction: 'none'
             }}
-            className={`group ${isEditMode ? 'cursor-move' : 'cursor-pointer'}`}
+            className={`group ${isEditMode ? 'cursor-move' : (isLinkable ? 'cursor-pointer hover:scale-105 transition-transform' : 'cursor-pointer')}`}
             onPointerDown={(e) => {
                 if (isEditMode) handlePointerDown('drag', e);
                 else {
-                    if (photo.type === 'link' && photo.url) window.open(photo.url, '_blank', 'noopener,noreferrer');
+                    if (isLinkable) window.open(photo.url, '_blank', 'noopener,noreferrer');
                     else if (!photo.type || photo.type === 'image') onClickView(photo);
                 }
             }}
@@ -111,35 +125,48 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
             )}
 
             {photo.type === 'postit' && (
-                <div className={`${POSTIT_COLORS[photo.color || 'yellow']} p-6 shadow-md font-serif text-xl border-t border-l relative transition-all duration-300 ${isEditMode && interaction === 'drag' ? 'scale-105 shadow-xl' : 'hover:shadow-lg'}`} style={{ minHeight: '150px' }}>
+                <div style={{ ...dynamicStyle, minHeight: '150px' }} className={`p-6 shadow-md font-serif text-xl border-t border-l relative transition-all duration-300 ${isEditMode && interaction === 'drag' ? 'scale-105 shadow-xl' : 'hover:shadow-lg'}`}>
                     <div className="absolute -top-3 left-1/2 -translate-x-1/2 w-14 h-5 bg-white/30 backdrop-blur-sm shadow-sm rounded-sm transform -rotate-2 z-10 opacity-70"></div>
                     {photo.content}
                 </div>
             )}
 
             {photo.type === 'date' && (
-                <div className="bg-white/95 backdrop-blur-sm px-6 py-3 rounded-full shadow-md border-2 border-stone-800 text-stone-800 font-bold font-mono whitespace-nowrap flex items-center justify-center gap-2">
+                <div style={dynamicStyle} className="px-6 py-3 rounded-full shadow-md whitespace-nowrap flex items-center justify-center gap-2">
                     <Calendar size={18} /> {photo.content}
                 </div>
             )}
 
             {photo.type === 'link' && (
-                <div className="bg-blue-500 text-white px-6 py-4 rounded-2xl shadow-lg font-bold text-center flex items-center justify-center gap-3 hover:bg-blue-600 transition-colors border-2 border-white">
+                <div style={dynamicStyle} className="px-6 py-4 rounded-2xl shadow-lg text-center flex items-center justify-center gap-3">
                     <LinkIcon size={20} /> <span className="truncate">{photo.content}</span>
                 </div>
             )}
 
-            {photo.type === 'emoji' && (
-                <div className="text-[100px] leading-none drop-shadow-xl select-none flex items-center justify-center">{photo.content}</div>
+            {photo.type === 'location' && (
+                <div style={dynamicStyle} className="px-6 py-3 rounded-full shadow-lg whitespace-nowrap flex items-center justify-center gap-2">
+                    <MapPin size={18} /> {photo.content}
+                </div>
             )}
 
-            {isEditMode && (
+            {/* EMOJI REDIMENSIONABLE: Ahora su tamaño se basa en el ancho para que puedas estirarlo */}
+            {photo.type === 'emoji' && (
+                <div style={{ fontSize: `${localTransform.width * 0.8}px` }} className="leading-none drop-shadow-xl select-none flex items-center justify-center">
+                    {photo.content}
+                </div>
+            )}
+
+            {isEditMode && isSelected && (
                 <>
-                    <div onPointerDown={(e) => handlePointerDown('rotate', e)} className="absolute -top-12 left-1/2 -translate-x-1/2 bg-white/95 p-2.5 rounded-full shadow-lg border border-stone-100 cursor-grab text-blue-500 hover:bg-blue-50 hover:scale-110 transition-all"><RotateCw size={18} strokeWidth={2.5} /></div>
-                    <div onPointerDown={(e) => handlePointerDown('resize', e)} className="absolute -bottom-5 -right-5 bg-white/95 p-2.5 rounded-full shadow-lg border border-stone-100 cursor-nwse-resize text-emerald-500 hover:bg-emerald-50 hover:scale-110 transition-all"><Maximize2 size={18} strokeWidth={2.5} /></div>
-                    <div onPointerDown={(e) => { e.stopPropagation(); deletePhoto(photo.id); }} className="absolute -top-5 -right-5 bg-white/95 p-2.5 rounded-full shadow-lg border border-stone-100 cursor-pointer text-rose-500 hover:bg-rose-50 hover:scale-110 transition-all opacity-0 group-hover:opacity-100"><Trash2 size={18} strokeWidth={2.5} /></div>
-                    <div className="absolute inset-0 border-2 border-dashed border-blue-400/0 group-hover:border-blue-400/60 pointer-events-none rounded-sm transition-colors"></div>
+                    <div onPointerDown={(e) => handlePointerDown('rotate', e)} className="absolute -top-12 left-1/2 -translate-x-1/2 bg-white/95 p-2.5 rounded-full shadow-lg border border-stone-100 cursor-grab text-blue-500 hover:bg-blue-50 hover:scale-110 transition-all z-50"><RotateCw size={18} strokeWidth={2.5} /></div>
+                    <div onPointerDown={(e) => handlePointerDown('resize', e)} className="absolute -bottom-5 -right-5 bg-white/95 p-2.5 rounded-full shadow-lg border border-stone-100 cursor-nwse-resize text-emerald-500 hover:bg-emerald-50 hover:scale-110 transition-all z-50"><Maximize2 size={18} strokeWidth={2.5} /></div>
+                    <div onPointerDown={(e) => { e.stopPropagation(); deletePhoto(photo.id); }} className="absolute -top-5 -right-5 bg-white/95 p-2.5 rounded-full shadow-lg border border-stone-100 cursor-pointer text-rose-500 hover:bg-rose-50 hover:scale-110 transition-all z-50"><Trash2 size={18} strokeWidth={2.5} /></div>
+                    <div className="absolute inset-0 border-2 border-dashed border-blue-500/80 pointer-events-none rounded-sm"></div>
                 </>
+            )}
+
+            {isEditMode && !isSelected && (
+                <div className="absolute inset-0 border-2 border-dashed border-blue-400/0 group-hover:border-blue-400/50 pointer-events-none rounded-sm transition-colors"></div>
             )}
         </div>
     );
