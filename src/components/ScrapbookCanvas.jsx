@@ -3,7 +3,7 @@ import { collection, doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { db, appId } from '../firebase';
 import { compressImage } from '../utils';
 import InteractablePhoto from './InteractablePhoto';
-import { ArrowLeft, Layers, SmilePlus, ImagePlus, Check, Edit3, X, StickyNote, Calendar, Link as LinkIcon, Loader2, Trash2, ChevronUp, MessageSquareText, MapPin, Edit2, Palette } from 'lucide-react';
+import { ArrowLeft, Layers, SmilePlus, ImagePlus, Check, Edit3, X, StickyNote, Calendar, Link as LinkIcon, Loader2, Trash2, ChevronUp, MessageSquareText, MapPin, Edit2, Palette, PenTool } from 'lucide-react';
 
 const CANVAS_BACKGROUNDS = {
     dots: { name: 'Puntos Clásicos', className: 'bg-[#f7f5f0] bg-[radial-gradient(#d1cfc7_2px,transparent_2px)] [background-size:32px_32px]' },
@@ -24,6 +24,9 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
     const [showStickerMenu, setShowStickerMenu] = useState(false);
     const [showBgMenu, setShowBgMenu] = useState(false);
 
+    const [isDrawingLazo, setIsDrawingLazo] = useState(false);
+    const [lazoPoints, setLazoPoints] = useState([]);
+
     const [selectedItemId, setSelectedItemId] = useState(null);
     const [editingStickerId, setEditingStickerId] = useState(null);
     const [stickerModalType, setStickerModalType] = useState(null);
@@ -37,17 +40,18 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
     const [stickerIsBold, setStickerIsBold] = useState(false);
     const [stickerIsItalic, setStickerIsItalic] = useState(false);
 
-    // Novedad: Opciones para Editar Fotos
     const [photoDescText, setPhotoDescText] = useState("");
     const [photoTapeStyle, setPhotoTapeStyle] = useState("top");
+
+    // Novedad: Estado para el grosor del Lazo
+    const [lazoTexture, setLazoTexture] = useState("hilo");
+    const [lazoThickness, setLazoThickness] = useState(3);
 
     const [deletePhotoId, setDeletePhotoId] = useState(null);
     const [selectedPhotoForDesc, setSelectedPhotoForDesc] = useState(null);
 
     const activeBgId = activeAlbum?.canvasBg || 'dots';
     const bgClass = CANVAS_BACKGROUNDS[activeBgId]?.className || CANVAS_BACKGROUNDS.dots.className;
-
-    // BOTONES UNIVERSALES ESTILOS
     const btnClass = "hover:scale-105 active:scale-95 transition-all duration-200 cursor-pointer shadow-sm font-medium flex items-center gap-2 px-5 py-3.5 rounded-2xl";
 
     const handleFileUpload = async (e) => {
@@ -81,11 +85,43 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
         catch (error) { if (error.code === 'permission-denied') setDbError('permissions'); }
     };
 
+    const finishDrawingLazo = async () => {
+        if (lazoPoints.length < 2) { setIsDrawingLazo(false); setLazoPoints([]); return; }
+
+        const minX = Math.min(...lazoPoints.map(p => p.x));
+        const maxX = Math.max(...lazoPoints.map(p => p.x));
+        const minY = Math.min(...lazoPoints.map(p => p.y));
+        const maxY = Math.max(...lazoPoints.map(p => p.y));
+
+        const width = Math.max(maxX - minX, 40);
+        const height = Math.max(maxY - minY, 40);
+
+        const normalizedPoints = lazoPoints.map(p => ({ x: p.x - minX, y: p.y - minY }));
+        const maxZ = activePhotos.length > 0 ? Math.max(...activePhotos.map(p => p.zIndex || 0)) : 0;
+
+        try {
+            const newLazoRef = doc(collection(db, 'artifacts', appId, 'photos'));
+            await setDoc(newLazoRef, {
+                albumId: activeAlbum.id, type: 'lazo',
+                points: normalizedPoints, x: minX, y: minY, width, height,
+                baseWidth: width, baseHeight: height, rotation: 0,
+                zIndex: maxZ + 1, color: '#1f2937', texture: 'hilo', thickness: 3
+            });
+            setSelectedItemId(newLazoRef.id);
+        } catch (e) { if (e.code === 'permission-denied') setDbError('permissions'); }
+
+        setIsDrawingLazo(false);
+        setLazoPoints([]);
+    };
+
     const handleSaveSticker = async (type) => {
         if (type === 'image') {
             await updatePhoto(editingStickerId, { description: photoDescText, frameColor: stickerBgColor, tapeStyle: photoTapeStyle });
-            setStickerModalType(null); setEditingStickerId(null);
-            return;
+            setStickerModalType(null); setEditingStickerId(null); return;
+        }
+        if (type === 'lazo') {
+            await updatePhoto(editingStickerId, { color: stickerBgColor, texture: lazoTexture, thickness: lazoThickness });
+            setStickerModalType(null); setEditingStickerId(null); return;
         }
 
         let width = 250;
@@ -151,6 +187,10 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                 setPhotoDescText(photoToEdit.description || "");
                 setStickerBgColor(photoToEdit.frameColor || "#faf9f5");
                 setPhotoTapeStyle(photoToEdit.tapeStyle || "top");
+            } else if (type === 'lazo') {
+                setStickerBgColor(photoToEdit.color || "#1f2937");
+                setLazoTexture(photoToEdit.texture || "hilo");
+                setLazoThickness(photoToEdit.thickness || 3);
             } else {
                 setStickerInputText(photoToEdit.content || "");
                 setStickerInputUrl(photoToEdit.url || "");
@@ -192,12 +232,12 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
     return (
         <div className="min-h-screen flex flex-col font-sans overflow-hidden bg-stone-100">
             {/* HEADER CONTROLS */}
-            <div className="absolute top-6 left-6 right-6 z-50 flex justify-between gap-4">
-                <div className="bg-white/90 backdrop-blur-md px-5 py-3 rounded-2xl shadow-sm border border-white flex items-center gap-5">
+            <div className="absolute top-6 left-6 right-6 z-50 flex justify-between gap-4 pointer-events-none">
+                <div className="bg-white/90 backdrop-blur-md px-5 py-3 rounded-2xl shadow-sm border border-white flex items-center gap-5 pointer-events-auto">
                     <button onClick={() => { setCurrentView('dashboard'); setActiveAlbumId(null); setSelectedItemId(null); }} className="p-2 text-stone-500 hover:bg-stone-100 rounded-full hover:scale-110 active:scale-95 transition-all"><ArrowLeft size={22} /></button>
                     <div><h2 className="text-xl font-bold font-serif text-stone-800">{activeAlbum?.name}</h2></div>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 pointer-events-auto">
                     {isEditMode && (
                         <>
                             <div className="relative">
@@ -231,10 +271,12 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                                             <button onClick={() => openStickerModal('location')} className="flex items-center gap-2 px-3 py-2 hover:bg-stone-50 rounded-xl text-left text-sm font-medium hover:scale-[1.02] active:scale-95 transition-all"><MapPin size={16} className="text-rose-500" /> Ubicación</button>
                                         </div>
                                         <div className="border-t border-stone-100 my-1"></div>
-                                        <div className="flex flex-col gap-4 px-3 py-3 max-h-72 overflow-y-auto">
+                                        <button onClick={() => { setIsDrawingLazo(true); setShowStickerMenu(false); }} className="mx-1 my-2 flex items-center justify-center gap-2 px-3 py-3 bg-stone-800 text-white rounded-xl text-center text-sm font-bold hover:scale-[1.02] active:scale-95 transition-all shadow-md"><PenTool size={16} /> Dibujar Lazo / Conector</button>
+                                        <div className="border-t border-stone-100 my-1"></div>
+                                        <div className="flex flex-col gap-4 px-3 py-3 max-h-60 overflow-y-auto">
                                             <div>
                                                 <p className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-2">Flechas y Conectores</p>
-                                                <div className="flex flex-wrap gap-2">{['➡️', '⬅️', '⬆️', '⬇️', '↗️', '↘️', '↙️', '↖️', '↔️', '↕️', '🔄', '↪️', '↩️', '⤵️', '⤴️', '➳', '➴', '➵', '➶', '➷', '➸', '➹', '➺', '➻', '➼', '➽', '〰️', '➰', '➿', '🎀', '🎗️', '🧵', '🧶'].map(e => <button key={e} onClick={() => handleAddEmoji(e)} className="text-xl hover:scale-125 active:scale-95 transition-transform">{e}</button>)}</div>
+                                                <div className="flex flex-wrap gap-2">{['➡️', '⬅️', '⬆️', '⬇️', '↗️', '↘️', '↙️', '↖️', '↔️', '↕️', '🔄', '↪️', '↩️', '⤵️', '⤴️', '➳', '➴', '➵', '➶', '➷', '➸', '➹', '➺', '➻', '➼', '➽', '〰️', '➰', '➿', '🎀', '🎗️', '🧵', '🧶'].map(e => <button key={e} onClick={() => handleAddEmoji(e)} className="text-xl hover:scale-125 active:scale-95 transition-transform" title="Añadir al lienzo">{e}</button>)}</div>
                                             </div>
                                             <div>
                                                 <p className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-2">Biología & Naturaleza</p>
@@ -263,7 +305,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                             </label>
                         </>
                     )}
-                    <button onClick={() => { setIsEditMode(!isEditMode); setSelectedItemId(null); setShowBgMenu(false); setShowLayers(false); setShowStickerMenu(false); }} className={`${btnClass} bg-white text-stone-700 border hover:bg-stone-50`}>
+                    <button onClick={() => { setIsEditMode(!isEditMode); setSelectedItemId(null); setShowBgMenu(false); setShowLayers(false); setShowStickerMenu(false); setIsDrawingLazo(false); }} className={`${btnClass} bg-white text-stone-700 border hover:bg-stone-50`}>
                         {isEditMode ? <Check size={20} /> : <Edit3 size={20} />} {isEditMode ? 'Terminar Edición' : 'Editar Álbum'}
                     </button>
                 </div>
@@ -275,11 +317,11 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                     <h3 className="font-bold mb-3 flex items-center justify-between text-stone-800">Capas <button onClick={() => setShowLayers(false)} className="p-1 hover:bg-stone-100 rounded-full hover:scale-110 active:scale-95 transition-all"><X size={16} /></button></h3>
                     <div className="flex flex-col gap-2 max-h-80 overflow-y-auto pr-1">
                         {[...activePhotos].sort((a, b) => (b.zIndex || 0) - (a.zIndex || 0)).map(p => {
-                            const isEditable = !p.type || ['image', 'postit', 'date', 'link', 'location'].includes(p.type);
+                            const isEditable = !p.type || ['image', 'postit', 'date', 'link', 'location', 'lazo'].includes(p.type);
                             return (
                                 <div key={p.id} onClick={() => setSelectedItemId(p.id)} className={`flex items-center justify-between p-2.5 rounded-xl text-sm group cursor-pointer transition-all border ${selectedItemId === p.id ? 'bg-indigo-50 border-indigo-300 shadow-sm scale-[1.02]' : 'bg-stone-50 border-stone-100 hover:border-indigo-200'}`}>
                                     <span className={`truncate w-24 font-medium text-xs ${selectedItemId === p.id ? 'text-indigo-800' : 'text-stone-600'}`}>
-                                        {p.type === 'postit' ? 'Post-it' : p.type === 'date' ? 'Fecha' : p.type === 'location' ? 'Ubicación' : p.type === 'link' ? 'Enlace' : p.type === 'emoji' ? p.content : 'Imagen'}
+                                        {p.type === 'postit' ? 'Post-it' : p.type === 'date' ? 'Fecha' : p.type === 'location' ? 'Ubicación' : p.type === 'link' ? 'Enlace' : p.type === 'lazo' ? 'Lazo / Conector' : p.type === 'emoji' ? p.content : 'Imagen'}
                                     </span>
                                     <div className="flex gap-0.5 opacity-80 group-hover:opacity-100 transition-opacity">
                                         {isEditable && <button onClick={(e) => { e.stopPropagation(); openStickerModal(p.type, p); }} className="p-1.5 hover:bg-blue-100 text-blue-600 rounded-lg hover:scale-110 active:scale-95 transition-all" title="Editar"><Edit2 size={14} /></button>}
@@ -293,11 +335,50 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                 </div>
             )}
 
-            {/* CANVAS */}
+            {/* CANVAS PRINCIPAL Y CAPA DE DIBUJO DE LAZOS */}
             <div className={`flex-1 relative w-full overflow-auto transition-colors duration-500 ${bgClass}`}>
-                <div className="w-full h-full min-w-[100vw] min-h-[100vh] relative p-20" onPointerDown={() => isEditMode && setSelectedItemId(null)}>
+
+                {/* Capa de intercepción para dibujar el lazo */}
+                {isDrawingLazo && (
+                    <div
+                        className="absolute inset-0 z-[200] cursor-crosshair"
+                        onPointerDown={(e) => {
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            setLazoPoints(prev => [...prev, { x: e.clientX - rect.left, y: e.clientY - rect.top }]);
+                        }}
+                    >
+                        <svg className="w-full h-full pointer-events-none drop-shadow-md">
+                            {lazoPoints.length > 0 && (
+                                <polyline
+                                    points={lazoPoints.map(p => `${p.x},${p.y}`).join(' ')}
+                                    fill="none" stroke="#1f2937" strokeWidth="3" strokeDasharray="8 8" strokeLinecap="round" strokeLinejoin="round"
+                                />
+                            )}
+                            {lazoPoints.map((p, i) => (
+                                <circle key={i} cx={p.x} cy={p.y} r="4" fill="#3b82f6" />
+                            ))}
+                        </svg>
+
+                        {/* AQUÍ ESTÁ LA CORRECCIÓN: e.stopPropagation() bloquea el clic hacia el lienzo */}
+                        <div
+                            className="absolute bottom-10 left-1/2 -translate-x-1/2 bg-white/95 backdrop-blur-md p-5 rounded-2xl shadow-2xl flex items-center gap-6 pointer-events-auto border border-stone-200"
+                            onPointerDown={(e) => e.stopPropagation()}
+                        >
+                            <div>
+                                <p className="font-bold text-stone-800 text-lg">Trazando Lazo...</p>
+                                <p className="text-sm text-stone-500">Haz clic en diferentes puntos para dibujar</p>
+                            </div>
+                            <div className="flex gap-3">
+                                <button onClick={() => { setIsDrawingLazo(false); setLazoPoints([]); }} className="px-5 py-2 hover:bg-stone-100 rounded-full font-medium hover:scale-105 active:scale-95 transition-all text-stone-600">Cancelar</button>
+                                <button onClick={finishDrawingLazo} className="px-6 py-2 bg-stone-800 text-white rounded-full font-bold shadow-md hover:bg-stone-700 hover:scale-105 active:scale-95 transition-all">Terminar Lazo</button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                <div className="w-full h-full min-w-[100vw] min-h-[100vh] relative p-20" onPointerDown={() => isEditMode && !isDrawingLazo && setSelectedItemId(null)}>
                     {activePhotos.map(photo => (
-                        <InteractablePhoto key={photo.id} photo={photo} updatePhoto={updatePhoto} deletePhoto={(id) => { setDeletePhotoId(id); setSelectedItemId(null); }} isEditMode={isEditMode} isSelected={selectedItemId === photo.id} onSelect={() => setSelectedItemId(photo.id)} onBringToFront={bringToFront} onClickView={(p) => setSelectedPhotoForDesc(p)} onEditClick={(p) => openStickerModal(p.type, p)} />
+                        <InteractablePhoto key={photo.id} photo={photo} updatePhoto={updatePhoto} deletePhoto={(id) => { setDeletePhotoId(id); setSelectedItemId(null); }} isEditMode={isEditMode && !isDrawingLazo} isSelected={selectedItemId === photo.id} onSelect={() => setSelectedItemId(photo.id)} onBringToFront={bringToFront} onClickView={(p) => setSelectedPhotoForDesc(p)} onEditClick={(p) => openStickerModal(p.type, p)} />
                     ))}
                 </div>
             </div>
@@ -305,16 +386,10 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
             {/* MODAL MODO FACEBOOK (PANTALLA COMPLETA) */}
             {selectedPhotoForDesc && !isEditMode && (
                 <div className="fixed inset-0 bg-black/95 z-[120] flex flex-col md:flex-row animate-in fade-in duration-300" onClick={() => setSelectedPhotoForDesc(null)}>
-
-                    {/* Botón de Cierre */}
                     <button className="absolute top-4 left-4 z-50 text-white/50 hover:text-white p-2 hover:scale-110 active:scale-95 transition-all" onClick={() => setSelectedPhotoForDesc(null)}><X size={32} /></button>
-
-                    {/* Área de la Foto (Izquierda) */}
                     <div className="flex-1 p-6 md:p-12 flex items-center justify-center relative">
                         <img src={selectedPhotoForDesc.src} alt="Detalle" className="max-w-full max-h-full object-contain drop-shadow-2xl" onClick={(e) => e.stopPropagation()} />
                     </div>
-
-                    {/* Panel de Descripción (Derecha) */}
                     <div className="w-full md:w-[400px] h-1/3 md:h-full bg-white shadow-2xl flex flex-col relative z-10 slide-in-from-bottom-full md:slide-in-from-right-full duration-300" onClick={(e) => e.stopPropagation()}>
                         <div className="p-6 md:p-8 border-b border-stone-100 flex items-center gap-4 bg-stone-50/50">
                             <div className="w-12 h-12 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center shrink-0 shadow-inner"><MessageSquareText size={24} /></div>
@@ -342,18 +417,14 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                 <div className="fixed inset-0 bg-stone-900/60 z-[110] flex items-center justify-center p-4 backdrop-blur-sm"><div className="bg-white p-8 rounded-3xl w-full max-w-sm"><h2 className="text-2xl font-bold mb-4">Eliminar Elemento</h2><div className="flex justify-end gap-3"><button onClick={() => setDeletePhotoId(null)} className="px-5 py-2 hover:bg-stone-100 rounded-full font-medium hover:scale-105 active:scale-95 transition-all">Cancelar</button><button onClick={confirmDeletePhoto} className="px-6 py-2 bg-rose-600 text-white rounded-full font-bold hover:scale-105 active:scale-95 transition-all shadow-md hover:bg-rose-700">Eliminar</button></div></div></div>
             )}
 
-            {/* Modal: Editar Imagen (Marco, Cinta y Descripción) */}
+            {/* Modal: Editar Imagen */}
             {stickerModalType === 'image' && (
                 <div className="fixed inset-0 bg-stone-900/60 z-[110] flex items-center justify-center p-4 backdrop-blur-sm">
                     <div className="bg-white rounded-3xl p-8 w-full max-w-md shadow-2xl">
                         <h2 className="text-2xl font-bold mb-6 flex items-center gap-2 text-stone-800"><ImagePlus /> Detalles de la Foto</h2>
-
                         <div className="bg-stone-50 p-4 rounded-xl border border-stone-200 mb-6">
                             <p className="text-xs font-bold text-stone-500 uppercase tracking-wider mb-4">Estilo Visual</p>
-                            <label className="flex items-center gap-3 text-sm font-medium mb-4 cursor-pointer hover:scale-[1.02] transition-transform">
-                                <input type="color" value={stickerBgColor} onChange={e => setStickerBgColor(e.target.value)} className="w-10 h-10 p-0 border-2 border-stone-300 rounded cursor-pointer" /> Color del Marco
-                            </label>
-
+                            <label className="flex items-center gap-3 text-sm font-medium mb-4 cursor-pointer hover:scale-[1.02] transition-transform"><input type="color" value={stickerBgColor} onChange={e => setStickerBgColor(e.target.value)} className="w-10 h-10 p-0 border-2 border-stone-300 rounded cursor-pointer" /> Color del Marco</label>
                             <p className="text-xs font-bold text-stone-500 uppercase tracking-wider mb-2">Posición de la Cinta Adhesiva</p>
                             <div className="flex gap-2">
                                 <button onClick={() => setPhotoTapeStyle('top')} className={`flex-1 py-2 text-sm rounded-lg font-bold border transition-all active:scale-95 ${photoTapeStyle === 'top' ? 'bg-stone-800 text-white border-stone-800' : 'bg-white text-stone-700 border-stone-200 hover:bg-stone-100'}`}>Arriba</button>
@@ -361,11 +432,50 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                                 <button onClick={() => setPhotoTapeStyle('none')} className={`flex-1 py-2 text-sm rounded-lg font-bold border transition-all active:scale-95 ${photoTapeStyle === 'none' ? 'bg-rose-100 text-rose-700 border-rose-200 hover:bg-rose-200' : 'bg-white text-stone-700 border-stone-200 hover:bg-stone-100'}`}>Ninguna</button>
                             </div>
                         </div>
-
                         <p className="text-xs font-bold text-stone-500 uppercase tracking-wider mb-2">Historia Secreta</p>
                         <textarea value={photoDescText} onChange={(e) => setPhotoDescText(e.target.value)} placeholder="Escribe la historia o detalle de esta fotografía..." className="w-full h-32 p-4 rounded-xl resize-none font-serif text-lg mb-6 outline-none focus:ring-2 focus:ring-amber-400 border border-stone-200 bg-stone-50" />
-
                         <div className="flex justify-end gap-3"><button onClick={() => { setStickerModalType(null); setEditingStickerId(null); }} className="px-5 py-2 font-medium hover:bg-stone-100 rounded-full hover:scale-105 active:scale-95 transition-all text-stone-600">Cancelar</button><button onClick={() => handleSaveSticker('image')} className="px-6 py-2 bg-stone-800 text-white rounded-full font-bold shadow-md hover:bg-stone-700 hover:scale-105 active:scale-95 transition-all">Guardar Cambios</button></div>
+                    </div>
+                </div>
+            )}
+
+            {/* Modal: Editar Lazo */}
+            {stickerModalType === 'lazo' && (
+                <div className="fixed inset-0 bg-stone-900/60 z-[110] flex items-center justify-center p-4 backdrop-blur-sm">
+                    <div className="bg-white rounded-3xl p-8 w-full max-w-md shadow-2xl">
+                        <h2 className="text-2xl font-bold mb-6 flex items-center gap-2 text-stone-800"><PenTool /> Editar Lazo / Conector</h2>
+
+                        <div className="bg-stone-50 p-4 rounded-xl border border-stone-200 mb-6">
+                            <label className="flex items-center gap-3 text-sm font-medium mb-6 cursor-pointer hover:scale-[1.02] transition-transform">
+                                <input type="color" value={stickerBgColor} onChange={e => setStickerBgColor(e.target.value)} className="w-10 h-10 p-0 border-2 border-stone-300 rounded cursor-pointer" /> Color de la Línea
+                            </label>
+
+                            {/* NUEVO: Control deslizante de grosor */}
+                            <div className="mb-6">
+                                <label className="flex justify-between text-xs font-bold text-stone-500 uppercase tracking-wider mb-2">
+                                    <span>Grosor</span>
+                                    <span>{lazoThickness}px</span>
+                                </label>
+                                <input
+                                    type="range"
+                                    min="1" max="20"
+                                    value={lazoThickness}
+                                    onChange={(e) => setLazoThickness(parseInt(e.target.value))}
+                                    className="w-full accent-stone-800 cursor-pointer"
+                                />
+                            </div>
+
+                            <p className="text-xs font-bold text-stone-500 uppercase tracking-wider mb-3">Textura / Estilo</p>
+                            <div className="grid grid-cols-2 gap-2">
+                                <button onClick={() => setLazoTexture('hilo')} className={`py-2 text-sm rounded-lg font-bold border transition-all active:scale-95 ${lazoTexture === 'hilo' ? 'bg-stone-800 text-white border-stone-800' : 'bg-white text-stone-700 border-stone-200 hover:bg-stone-100'}`}>Hilo Sólido</button>
+                                <button onClick={() => setLazoTexture('punteada')} className={`py-2 text-sm rounded-lg font-bold border transition-all active:scale-95 ${lazoTexture === 'punteada' ? 'bg-stone-800 text-white border-stone-800' : 'bg-white text-stone-700 border-stone-200 hover:bg-stone-100'}`}>Punteado</button>
+                                <button onClick={() => setLazoTexture('estambre')} className={`py-2 text-sm rounded-lg font-bold border transition-all active:scale-95 ${lazoTexture === 'estambre' ? 'bg-stone-800 text-white border-stone-800' : 'bg-white text-stone-700 border-stone-200 hover:bg-stone-100'}`}>Estambre Grueso</button>
+                                <button onClick={() => setLazoTexture('flecha')} className={`py-2 text-sm rounded-lg font-bold border transition-all active:scale-95 ${lazoTexture === 'flecha' ? 'bg-stone-800 text-white border-stone-800' : 'bg-white text-stone-700 border-stone-200 hover:bg-stone-100'}`}>Flecha ➡️</button>
+                                <button onClick={() => setLazoTexture('bidireccional')} className={`py-2 text-sm rounded-lg font-bold border col-span-2 transition-all active:scale-95 ${lazoTexture === 'bidireccional' ? 'bg-stone-800 text-white border-stone-800' : 'bg-white text-stone-700 border-stone-200 hover:bg-stone-100'}`}>Bidireccional ↔️</button>
+                            </div>
+                        </div>
+
+                        <div className="flex justify-end gap-3"><button onClick={() => { setStickerModalType(null); setEditingStickerId(null); }} className="px-5 py-2 font-medium hover:bg-stone-100 rounded-full hover:scale-105 active:scale-95 transition-all text-stone-600">Cancelar</button><button onClick={() => handleSaveSticker('lazo')} className="px-6 py-2 bg-stone-800 text-white rounded-full font-bold shadow-md hover:bg-stone-700 hover:scale-105 active:scale-95 transition-all">Guardar Cambios</button></div>
                     </div>
                 </div>
             )}
