@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { RotateCw, Maximize2, Trash2, MessageSquareText, Calendar, Link as LinkIcon, MapPin, Edit2 } from 'lucide-react';
+import { RotateCw, Maximize2, Trash2, MessageSquareText, Calendar, Link as LinkIcon, MapPin, Edit2, Music, Hash } from 'lucide-react';
 
 export const getLazoPath = (pts, isSmooth) => {
     if (!pts || pts.length === 0) return "";
@@ -23,7 +23,7 @@ export const getLazoPath = (pts, isSmooth) => {
     return d;
 };
 
-export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isEditMode, isSelected, onSelect, onBringToFront, onClickView, onEditClick }) {
+export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isEditMode, isSelected, onSelect, onBringToFront, onClickView, onEditClick, zoom = 1 }) {
     const [interaction, setInteraction] = useState(null);
     const [localTransform, setLocalTransform] = useState({
         x: photo.x, y: photo.y, width: photo.width, rotation: photo.rotation
@@ -75,8 +75,10 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
 
         const handlePointerMove = (e) => {
             const s = startState.current;
-            const dx = e.clientX - s.mouseX;
-            const dy = e.clientY - s.mouseY;
+
+            // Ajustamos el movimiento del ratón dividiéndolo entre el nivel de zoom actual
+            const dx = (e.clientX - s.mouseX) / zoom;
+            const dy = (e.clientY - s.mouseY) / zoom;
 
             if (interaction === 'drag') {
                 setLocalTransform(prev => ({ ...prev, x: s.x + dx, y: s.y + dy }));
@@ -124,7 +126,7 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
             window.removeEventListener('pointermove', handlePointerMove);
             window.removeEventListener('pointerup', handlePointerUp);
         };
-    }, [interaction, photo.id, updatePhoto, localPoints, localTransform, photo.baseWidth, photo.width]);
+    }, [interaction, photo.id, updatePhoto, localPoints, localTransform, photo.baseWidth, photo.width, zoom]);
 
     const dynamicStyle = {
         backgroundColor: photo.bgColor || '#ffffff',
@@ -136,7 +138,7 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
         borderStyle: 'solid'
     };
 
-    const isLinkable = (photo.type === 'link' || photo.type === 'location') && photo.url;
+    const isLinkable = (photo.type === 'link' || photo.type === 'location' || photo.type === 'music') && photo.url;
     const frameColor = photo.frameColor || '#faf9f5';
     const tapeStyle = photo.tapeStyle || 'top';
     const tapeGradient = 'linear-gradient(to right, rgba(255,255,255,0.1), rgba(255,255,255,0.6))';
@@ -161,18 +163,18 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
             {/* FOTOGRAFÍA */}
             {(!photo.type || photo.type === 'image') && (
                 <div style={{ backgroundColor: frameColor }} className={`p-3 pb-12 rounded-sm border relative transition-all duration-300 ${isEditMode && interaction === 'drag' ? 'border-amber-300 shadow-2xl scale-105' : 'border-stone-200 shadow-xl group-hover:shadow-2xl'}`}>
-                    {tapeStyle === 'top' && <div className="absolute -top-3 left-1/2 -translate-x-1/2 w-16 h-6 bg-white/40 backdrop-blur-md border border-white/40 shadow-sm rounded-sm transform rotate-2 z-10 opacity-80" style={{ backgroundImage: tapeGradient }}></div>}
+                    {tapeStyle === 'top' && <div className="absolute -top-3 left-1/2 -translate-x-1/2 w-16 h-6 bg-white/40 backdrop-blur-md border border-white/40 shadow-sm rounded-sm transform rotate-2 z-10 opacity-80 print:opacity-100" style={{ backgroundImage: tapeGradient }}></div>}
                     {tapeStyle === 'corners' && (
                         <>
-                            <div className="absolute -top-2 -left-3 w-10 h-5 bg-white/40 backdrop-blur-md shadow-sm rounded-sm transform -rotate-45 z-10 opacity-80" style={{ backgroundImage: tapeGradient }}></div>
-                            <div className="absolute -top-2 -right-3 w-10 h-5 bg-white/40 backdrop-blur-md shadow-sm rounded-sm transform rotate-45 z-10 opacity-80" style={{ backgroundImage: tapeGradient }}></div>
-                            <div className="absolute -bottom-2 -left-3 w-10 h-5 bg-white/40 backdrop-blur-md shadow-sm rounded-sm transform rotate-45 z-10 opacity-80" style={{ backgroundImage: tapeGradient }}></div>
-                            <div className="absolute -bottom-2 -right-3 w-10 h-5 bg-white/40 backdrop-blur-md shadow-sm rounded-sm transform -rotate-45 z-10 opacity-80" style={{ backgroundImage: tapeGradient }}></div>
+                            <div className="absolute -top-2 -left-3 w-10 h-5 bg-white/40 backdrop-blur-md shadow-sm rounded-sm transform -rotate-45 z-10 opacity-80 print:opacity-100" style={{ backgroundImage: tapeGradient }}></div>
+                            <div className="absolute -top-2 -right-3 w-10 h-5 bg-white/40 backdrop-blur-md shadow-sm rounded-sm transform rotate-45 z-10 opacity-80 print:opacity-100" style={{ backgroundImage: tapeGradient }}></div>
+                            <div className="absolute -bottom-2 -left-3 w-10 h-5 bg-white/40 backdrop-blur-md shadow-sm rounded-sm transform rotate-45 z-10 opacity-80 print:opacity-100" style={{ backgroundImage: tapeGradient }}></div>
+                            <div className="absolute -bottom-2 -right-3 w-10 h-5 bg-white/40 backdrop-blur-md shadow-sm rounded-sm transform -rotate-45 z-10 opacity-80 print:opacity-100" style={{ backgroundImage: tapeGradient }}></div>
                         </>
                     )}
                     <img src={photo.src} alt="Álbum" className="w-full h-auto object-cover pointer-events-none rounded-sm border border-black/10 shadow-inner" draggable="false" />
                     {!isEditMode && photo.description && (
-                        <div className="absolute bottom-3 left-0 w-full flex justify-center text-stone-500">
+                        <div className="absolute bottom-3 left-0 w-full flex justify-center text-stone-500 print:hidden">
                             <div className="flex items-center gap-1.5 bg-white/80 px-3 py-1 rounded-full text-xs font-serif italic backdrop-blur-sm shadow-sm border border-stone-200/50">
                                 <MessageSquareText size={14} /> Leer recuerdo
                             </div>
@@ -181,7 +183,7 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                 </div>
             )}
 
-            {/* DIBUJO LIBRE (NUEVO) */}
+            {/* DIBUJO LIBRE */}
             {photo.type === 'drawing' && (
                 <div className="relative">
                     <img src={photo.src} alt="Dibujo Libre" className="w-full h-auto drop-shadow-md pointer-events-none select-none" draggable="false" />
@@ -215,7 +217,7 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                             fill="#3b82f6"
                             stroke="white"
                             strokeWidth={2 * ((photo.baseWidth || photo.width) / localTransform.width)}
-                            className="cursor-crosshair pointer-events-auto hover:fill-blue-400 opacity-90 transition-colors"
+                            className="cursor-crosshair pointer-events-auto hover:fill-blue-400 opacity-90 transition-colors print:hidden"
                             onPointerDown={(e) => handlePointerDown('dragPoint', e, index)}
                         />
                     ))}
@@ -224,7 +226,7 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
 
             {photo.type === 'postit' && (
                 <div style={{ ...dynamicStyle, minHeight: '150px' }} className={`p-6 shadow-md font-serif text-xl border-t border-l relative transition-all duration-300 ${isEditMode && interaction === 'drag' ? 'scale-105 shadow-xl' : 'hover:shadow-lg'}`}>
-                    <div className="absolute -top-3 left-1/2 -translate-x-1/2 w-14 h-5 bg-white/30 backdrop-blur-sm shadow-sm rounded-sm transform -rotate-2 z-10 opacity-70"></div>
+                    <div className="absolute -top-3 left-1/2 -translate-x-1/2 w-14 h-5 bg-white/30 backdrop-blur-sm shadow-sm rounded-sm transform -rotate-2 z-10 opacity-70 print:opacity-100"></div>
                     {photo.content}
                 </div>
             )}
@@ -247,17 +249,33 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                 </div>
             )}
 
+            {/* NUEVO: PEGATINA DE MÚSICA */}
+            {photo.type === 'music' && (
+                <div style={dynamicStyle} className="px-6 py-4 rounded-2xl shadow-lg text-center flex items-center justify-center gap-3">
+                    <Music size={20} /> <span className="truncate font-bold">{photo.content}</span>
+                </div>
+            )}
+
+            {/* NUEVO: PEGATINA DE CONTADOR */}
+            {photo.type === 'counter' && (
+                <div style={dynamicStyle} className="px-6 py-4 rounded-3xl shadow-lg flex items-center justify-center gap-4 border-b-4">
+                    <span className="text-4xl font-black">{photo.url}</span>
+                    <span className="text-sm uppercase tracking-widest font-bold opacity-80 leading-tight w-min text-left">{photo.content}</span>
+                </div>
+            )}
+
             {photo.type === 'emoji' && (
                 <div style={{ fontSize: `${localTransform.width * 0.8}px` }} className="leading-none drop-shadow-xl select-none flex items-center justify-center">
                     {photo.content}
                 </div>
             )}
 
+            {/* CONTROLES DE EDICIÓN FLOTANTES (Ocultos al imprimir) */}
             {isEditMode && isSelected && (
-                <>
+                <div className="print:hidden">
                     <div onPointerDown={(e) => handlePointerDown('rotate', e)} className="absolute -top-12 left-1/2 -translate-x-1/2 bg-white/95 p-2.5 rounded-full shadow-lg border border-stone-100 cursor-grab text-blue-500 hover:bg-blue-50 hover:scale-110 active:scale-95 transition-all z-50"><RotateCw size={18} strokeWidth={2.5} /></div>
 
-                    {(!photo.type || photo.type === 'image' || ['postit', 'date', 'link', 'location', 'lazo', 'drawing'].includes(photo.type)) && (
+                    {(!photo.type || photo.type === 'image' || ['postit', 'date', 'link', 'location', 'lazo', 'drawing', 'music', 'counter'].includes(photo.type)) && (
                         <div onPointerDown={(e) => { e.stopPropagation(); onEditClick(photo); }} className="absolute -top-5 -left-5 bg-white/95 p-2.5 rounded-full shadow-lg border border-stone-100 cursor-pointer text-indigo-500 hover:bg-indigo-50 hover:scale-110 active:scale-95 transition-all z-50"><Edit2 size={18} strokeWidth={2.5} /></div>
                     )}
 
@@ -265,11 +283,11 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                     <div onPointerDown={(e) => { e.stopPropagation(); deletePhoto(photo.id); }} className="absolute -top-5 -right-5 bg-white/95 p-2.5 rounded-full shadow-lg border border-stone-100 cursor-pointer text-rose-500 hover:bg-rose-50 hover:scale-110 active:scale-95 transition-all z-50"><Trash2 size={18} strokeWidth={2.5} /></div>
 
                     <div className="absolute inset-0 border-2 border-dashed border-blue-500/80 pointer-events-none rounded-sm"></div>
-                </>
+                </div>
             )}
 
             {isEditMode && !isSelected && (
-                <div className="absolute inset-0 border-2 border-dashed border-blue-400/0 group-hover:border-blue-400/50 pointer-events-none rounded-sm transition-colors"></div>
+                <div className="absolute inset-0 border-2 border-dashed border-blue-400/0 group-hover:border-blue-400/50 pointer-events-none rounded-sm transition-colors print:hidden"></div>
             )}
         </div>
     );

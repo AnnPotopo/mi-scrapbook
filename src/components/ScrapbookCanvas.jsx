@@ -3,7 +3,7 @@ import { collection, doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { db, appId } from '../firebase';
 import { compressImage } from '../utils';
 import InteractablePhoto, { getLazoPath } from './InteractablePhoto';
-import { ArrowLeft, Layers, SmilePlus, ImagePlus, Check, Edit3, X, StickyNote, Calendar, Link as LinkIcon, Loader2, Trash2, ChevronUp, MessageSquareText, MapPin, Edit2, Palette, PenTool, Brush } from 'lucide-react';
+import { ArrowLeft, Layers, SmilePlus, ImagePlus, Check, Edit3, X, StickyNote, Calendar, Link as LinkIcon, Loader2, Trash2, ChevronUp, MessageSquareText, MapPin, Edit2, Palette, PenTool, Brush, Music, Hash, Printer, ZoomIn, ZoomOut } from 'lucide-react';
 
 const CANVAS_BACKGROUNDS = {
     dots: { name: 'Puntos Clásicos', className: 'bg-[#f7f5f0] bg-[radial-gradient(#d1cfc7_2px,transparent_2px)] [background-size:32px_32px]' },
@@ -19,6 +19,10 @@ const CANVAS_BACKGROUNDS = {
 export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCurrentView, setActiveAlbumId, setDbError }) {
     const [isEditMode, setIsEditMode] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
+
+    // Novedad: Control de Zoom
+    const [zoom, setZoom] = useState(1);
+    const scrollContainerRef = useRef(null);
 
     const [showLayers, setShowLayers] = useState(false);
     const [showStickerMenu, setShowStickerMenu] = useState(false);
@@ -50,7 +54,6 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
     const [deletePhotoId, setDeletePhotoId] = useState(null);
     const [selectedPhotoForDesc, setSelectedPhotoForDesc] = useState(null);
 
-    // NUEVO: Estado para Dibujo Libre (Canvas)
     const drawingCanvasRef = useRef(null);
     const [isDrawingCanvas, setIsDrawingCanvas] = useState(false);
 
@@ -58,7 +61,11 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
     const bgClass = CANVAS_BACKGROUNDS[activeBgId]?.className || CANVAS_BACKGROUNDS.dots.className;
     const btnClass = "hover:scale-105 active:scale-95 transition-all duration-200 cursor-pointer shadow-sm font-medium flex items-center gap-2 px-5 py-3.5 rounded-2xl";
 
-    // Efecto para cargar dibujo previo en el modal si se está editando
+    // Función para Imprimir / Exportar a PDF
+    const handlePrint = () => {
+        window.print();
+    };
+
     useEffect(() => {
         if (stickerModalType === 'drawing' && stickerInputText && drawingCanvasRef.current) {
             const ctx = drawingCanvasRef.current.getContext('2d');
@@ -99,11 +106,22 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
     };
 
     const stopFreeDrawing = () => { setIsDrawingCanvas(false); };
-
     const clearFreeCanvas = () => {
         const canvas = drawingCanvasRef.current;
         const ctx = canvas.getContext('2d');
         ctx.clearRect(0, 0, canvas.width, canvas.height);
+    };
+
+    // Calcula el centro de la pantalla actual (teniendo en cuenta el scroll y el zoom) para los nuevos elementos
+    const getCenterCoords = (itemWidth = 300) => {
+        const container = scrollContainerRef.current;
+        let startX = 50;
+        let startY = 50;
+        if (container) {
+            startX = (container.scrollLeft + container.clientWidth / 2) / zoom - (itemWidth / 2);
+            startY = (container.scrollTop + container.clientHeight / 2) / zoom - 100;
+        }
+        return { startX: Math.max(50, startX), startY: Math.max(50, startY) };
     };
 
     const handleFileUpload = async (e) => {
@@ -112,12 +130,14 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
         if (!files.length) return;
         setIsUploading(true);
         const maxZ = activePhotos.length > 0 ? Math.max(...activePhotos.map(p => p.zIndex || 0)) : 0;
+        const { startX, startY } = getCenterCoords(300);
+
         try {
             for (let i = 0; i < files.length; i++) {
                 if (files[i].type.startsWith('image/')) {
                     const base64Data = await compressImage(files[i]);
                     await setDoc(doc(collection(db, 'artifacts', appId, 'photos')), {
-                        albumId: activeAlbum.id, type: 'image', src: base64Data, x: 50 + (i * 30), y: 50 + (i * 30),
+                        albumId: activeAlbum.id, type: 'image', src: base64Data, x: startX + (i * 30), y: startY + (i * 30),
                         width: 300, rotation: Math.floor(Math.random() * 20) - 10, zIndex: maxZ + i + 1,
                         description: "", frameColor: "#faf9f5", tapeStyle: "top"
                     });
@@ -184,8 +204,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                     await updatePhoto(editingStickerId, drawingData);
                 } else {
                     const maxZ = activePhotos.length > 0 ? Math.max(...activePhotos.map(p => p.zIndex || 0)) : 0;
-                    const startX = Math.max(50, window.innerWidth / 2 - 150 + (Math.random() * 50 - 25));
-                    const startY = Math.max(50, window.innerHeight / 2 - 150 + (Math.random() * 50 - 25));
+                    const { startX, startY } = getCenterCoords(400);
                     const newStickerRef = doc(collection(db, 'artifacts', appId, 'photos'));
                     await setDoc(newStickerRef, { albumId: activeAlbum.id, ...drawingData, x: startX, y: startY, width: 400, rotation: Math.floor(Math.random() * 20) - 10, zIndex: maxZ + 1 });
                     setSelectedItemId(newStickerRef.id);
@@ -196,7 +215,8 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
         }
 
         let width = 250;
-        if (type === 'date' || type === 'location') width = 220;
+        if (type === 'date' || type === 'location' || type === 'counter') width = 220;
+
         let contentToSave = stickerInputText;
         if (type === 'date') {
             const [y, m, d] = stickerDate.split('-');
@@ -213,8 +233,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
             if (editingStickerId) await updatePhoto(editingStickerId, stickerData);
             else {
                 const maxZ = activePhotos.length > 0 ? Math.max(...activePhotos.map(p => p.zIndex || 0)) : 0;
-                const startX = Math.max(50, window.innerWidth / 2 - (width / 2) + (Math.random() * 50 - 25));
-                const startY = Math.max(50, window.innerHeight / 2 - 100 + (Math.random() * 50 - 25));
+                const { startX, startY } = getCenterCoords(width);
 
                 const newStickerRef = doc(collection(db, 'artifacts', appId, 'photos'));
                 await setDoc(newStickerRef, { albumId: activeAlbum.id, ...stickerData, x: startX, y: startY, width, rotation: Math.floor(Math.random() * 20) - 10, zIndex: maxZ + 1 });
@@ -226,8 +245,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
 
     const handleAddEmoji = async (emoji) => {
         const maxZ = activePhotos.length > 0 ? Math.max(...activePhotos.map(p => p.zIndex || 0)) : 0;
-        const startX = Math.max(50, window.innerWidth / 2 - 60 + (Math.random() * 50 - 25));
-        const startY = Math.max(50, window.innerHeight / 2 - 100 + (Math.random() * 50 - 25));
+        const { startX, startY } = getCenterCoords(120);
         try {
             const newEmojiRef = doc(collection(db, 'artifacts', appId, 'photos'));
             await setDoc(newEmojiRef, { albumId: activeAlbum.id, type: 'emoji', content: emoji, x: startX, y: startY, width: 120, rotation: Math.floor(Math.random() * 20) - 10, zIndex: maxZ + 1 });
@@ -279,10 +297,10 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
         } else {
             setEditingStickerId(null);
             setStickerInputText(""); setStickerInputUrl("");
-            setStickerBgColor(type === 'postit' ? '#fef08a' : type === 'link' ? '#3b82f6' : type === 'drawing' ? '#1f2937' : '#ffffff');
-            setStickerBorderColor(type === 'location' ? '#f43f5e' : type === 'link' ? '#ffffff' : '#e5e7eb');
-            setStickerTextColor(type === 'link' ? '#ffffff' : type === 'location' ? '#e11d48' : '#1f2937');
-            setStickerIsBold(type === 'link' || type === 'location' || type === 'date');
+            setStickerBgColor(type === 'postit' ? '#fef08a' : (type === 'link' || type === 'music' || type === 'counter') ? '#3b82f6' : type === 'drawing' ? '#1f2937' : '#ffffff');
+            setStickerBorderColor(type === 'location' ? '#f43f5e' : (type === 'link' || type === 'music' || type === 'counter') ? '#ffffff' : '#e5e7eb');
+            setStickerTextColor((type === 'link' || type === 'music' || type === 'counter') ? '#ffffff' : type === 'location' ? '#e11d48' : '#1f2937');
+            setStickerIsBold(type === 'link' || type === 'location' || type === 'date' || type === 'music' || type === 'counter');
             setStickerIsItalic(false);
             setLazoThickness(3);
             setStickerDate(new Date().toISOString().split('T')[0]);
@@ -306,9 +324,9 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
     );
 
     return (
-        <div className="min-h-screen flex flex-col font-sans overflow-hidden bg-stone-100 relative">
-            {/* HEADER CONTROLS */}
-            <div className="absolute top-6 left-6 right-6 z-[9000] flex justify-between gap-4 pointer-events-none">
+        <div className="h-screen flex flex-col font-sans overflow-hidden bg-stone-100 relative">
+            {/* HEADER CONTROLS (Ocultos al imprimir) */}
+            <div className="absolute top-6 left-6 right-6 z-[99999] flex justify-between gap-4 pointer-events-none print:hidden">
                 <div className="bg-white/90 backdrop-blur-md px-5 py-3 rounded-2xl shadow-sm border border-white flex items-center gap-5 pointer-events-auto">
                     <button onClick={() => { setCurrentView('dashboard'); setActiveAlbumId(null); setSelectedItemId(null); }} className="p-2 text-stone-500 hover:bg-stone-100 rounded-full hover:scale-110 active:scale-95 transition-all"><ArrowLeft size={22} /></button>
                     <div><h2 className="text-xl font-bold font-serif text-stone-800">{activeAlbum?.name}</h2></div>
@@ -321,7 +339,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                                     <Palette size={20} /> <span className="hidden sm:inline">Fondo</span>
                                 </button>
                                 {showBgMenu && (
-                                    <div className="absolute top-full right-0 mt-3 bg-white rounded-2xl shadow-xl border border-stone-100 p-4 w-72 z-[9000]">
+                                    <div className="absolute top-full right-0 mt-3 bg-white rounded-2xl shadow-xl border border-stone-100 p-4 w-72 z-[99999]">
                                         <p className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-3">Fondo del Lienzo</p>
                                         <div className="grid grid-cols-2 gap-2">
                                             {Object.entries(CANVAS_BACKGROUNDS).map(([key, bg]) => (
@@ -339,12 +357,14 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                                     <SmilePlus size={20} /> <span className="hidden sm:inline">Pegatinas</span>
                                 </button>
                                 {showStickerMenu && (
-                                    <div className="absolute top-full right-0 mt-3 bg-white rounded-2xl shadow-xl border border-stone-100 p-2 w-80 flex flex-col z-[9000]">
+                                    <div className="absolute top-full right-0 mt-3 bg-white rounded-2xl shadow-xl border border-stone-100 p-2 w-80 flex flex-col z-[99999]">
                                         <div className="grid grid-cols-2 gap-1 mb-2">
                                             <button onClick={() => openStickerModal('postit')} className="flex items-center gap-2 px-3 py-2 hover:bg-stone-50 rounded-xl text-left text-sm font-medium hover:scale-[1.02] active:scale-95 transition-all"><StickyNote size={16} className="text-yellow-500" /> Post-it</button>
                                             <button onClick={() => openStickerModal('date')} className="flex items-center gap-2 px-3 py-2 hover:bg-stone-50 rounded-xl text-left text-sm font-medium hover:scale-[1.02] active:scale-95 transition-all"><Calendar size={16} className="text-blue-500" /> Fecha</button>
-                                            <button onClick={() => openStickerModal('link')} className="flex items-center gap-2 px-3 py-2 hover:bg-stone-50 rounded-xl text-left text-sm font-medium hover:scale-[1.02] active:scale-95 transition-all"><LinkIcon size={16} className="text-emerald-500" /> Enlace</button>
                                             <button onClick={() => openStickerModal('location')} className="flex items-center gap-2 px-3 py-2 hover:bg-stone-50 rounded-xl text-left text-sm font-medium hover:scale-[1.02] active:scale-95 transition-all"><MapPin size={16} className="text-rose-500" /> Ubicación</button>
+                                            <button onClick={() => openStickerModal('link')} className="flex items-center gap-2 px-3 py-2 hover:bg-stone-50 rounded-xl text-left text-sm font-medium hover:scale-[1.02] active:scale-95 transition-all"><LinkIcon size={16} className="text-emerald-500" /> Enlace</button>
+                                            <button onClick={() => openStickerModal('music')} className="flex items-center gap-2 px-3 py-2 hover:bg-stone-50 rounded-xl text-left text-sm font-medium hover:scale-[1.02] active:scale-95 transition-all"><Music size={16} className="text-violet-500" /> Canción</button>
+                                            <button onClick={() => openStickerModal('counter')} className="flex items-center gap-2 px-3 py-2 hover:bg-stone-50 rounded-xl text-left text-sm font-medium hover:scale-[1.02] active:scale-95 transition-all"><Hash size={16} className="text-amber-500" /> Contador</button>
                                         </div>
                                         <div className="border-t border-stone-100 my-1"></div>
                                         <div className="flex gap-1 px-1 py-2">
@@ -380,17 +400,29 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                 </div>
             </div>
 
+            {/* CONTROLES FLOTANTES DE ZOOM E IMPRESIÓN (Abajo a la derecha) */}
+            <div className="absolute bottom-8 right-8 z-[9000] flex flex-col gap-4 print:hidden pointer-events-none">
+                <button onClick={handlePrint} className="p-3.5 bg-stone-800 text-white rounded-full shadow-[0_8px_30px_rgb(0,0,0,0.2)] hover:bg-stone-700 hover:scale-110 active:scale-95 transition-all pointer-events-auto" title="Imprimir / Guardar PDF">
+                    <Printer size={22} />
+                </button>
+                <div className="flex flex-col bg-white/90 backdrop-blur-md rounded-full shadow-[0_8px_30px_rgb(0,0,0,0.1)] overflow-hidden border border-stone-200 pointer-events-auto">
+                    <button onClick={() => setZoom(z => Math.min(z + 0.1, 2.5))} className="p-3 hover:bg-stone-100 active:bg-stone-200 transition-colors text-stone-600" title="Acercar"><ZoomIn size={20} /></button>
+                    <div className="text-center text-[10px] font-bold py-1.5 border-y border-stone-200 text-stone-500 bg-stone-50">{Math.round(zoom * 100)}%</div>
+                    <button onClick={() => setZoom(z => Math.max(z - 0.1, 0.3))} className="p-3 hover:bg-stone-100 active:bg-stone-200 transition-colors text-stone-600" title="Alejar"><ZoomOut size={20} /></button>
+                </div>
+            </div>
+
             {/* MENÚ DE CAPAS */}
             {showLayers && isEditMode && (
-                <div className="absolute top-24 right-6 w-72 bg-white/95 backdrop-blur-md rounded-2xl shadow-xl p-4 z-[9000] border border-stone-200">
+                <div className="absolute top-24 right-6 w-72 bg-white/95 backdrop-blur-md rounded-2xl shadow-xl p-4 z-[99999] border border-stone-200 print:hidden">
                     <h3 className="font-bold mb-3 flex items-center justify-between text-stone-800">Capas <button onClick={() => setShowLayers(false)} className="p-1 hover:bg-stone-100 rounded-full hover:scale-110 active:scale-95 transition-all"><X size={16} /></button></h3>
                     <div className="flex flex-col gap-2 max-h-80 overflow-y-auto pr-1">
                         {[...activePhotos].sort((a, b) => (b.zIndex || 0) - (a.zIndex || 0)).map(p => {
-                            const isEditable = !p.type || ['image', 'postit', 'date', 'link', 'location', 'lazo', 'drawing'].includes(p.type);
+                            const isEditable = !p.type || ['image', 'postit', 'date', 'link', 'music', 'counter', 'location', 'lazo', 'drawing'].includes(p.type);
                             return (
                                 <div key={p.id} onClick={() => setSelectedItemId(p.id)} className={`flex items-center justify-between p-2.5 rounded-xl text-sm group cursor-pointer transition-all border ${selectedItemId === p.id ? 'bg-indigo-50 border-indigo-300 shadow-sm scale-[1.02]' : 'bg-stone-50 border-stone-100 hover:border-indigo-200'}`}>
                                     <span className={`truncate w-24 font-medium text-xs ${selectedItemId === p.id ? 'text-indigo-800' : 'text-stone-600'}`}>
-                                        {p.type === 'postit' ? 'Post-it' : p.type === 'date' ? 'Fecha' : p.type === 'location' ? 'Ubicación' : p.type === 'link' ? 'Enlace' : p.type === 'lazo' ? 'Lazo' : p.type === 'drawing' ? 'Dibujo Libre' : p.type === 'emoji' ? p.content : 'Imagen'}
+                                        {p.type === 'postit' ? 'Post-it' : p.type === 'date' ? 'Fecha' : p.type === 'location' ? 'Ubicación' : p.type === 'link' ? 'Enlace' : p.type === 'music' ? 'Canción' : p.type === 'counter' ? 'Contador' : p.type === 'lazo' ? 'Lazo' : p.type === 'drawing' ? 'Dibujo Libre' : p.type === 'emoji' ? p.content : 'Imagen'}
                                     </span>
                                     <div className="flex gap-0.5 opacity-80 group-hover:opacity-100 transition-opacity">
                                         {isEditable && <button onClick={(e) => { e.stopPropagation(); openStickerModal(p.type, p); }} className="p-1.5 hover:bg-blue-100 text-blue-600 rounded-lg hover:scale-110 active:scale-95 transition-all" title="Editar"><Edit2 size={14} /></button>}
@@ -404,33 +436,47 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                 </div>
             )}
 
-            {/* CANVAS PRINCIPAL Y CAPA DE DIBUJO DE LAZOS */}
-            <div className={`flex-1 relative w-full overflow-auto transition-colors duration-500 ${bgClass}`}>
+            {/* CANVAS PRINCIPAL Y ÁREA EXPANDIDA (Soporta Zoom) */}
+            <div
+                ref={scrollContainerRef}
+                className={`flex-1 relative w-full overflow-auto transition-colors duration-500 ${bgClass} print:bg-white print:overflow-visible`}
+            >
+                <div
+                    className="w-[4000px] h-[3000px] origin-top-left transition-transform duration-200"
+                    style={{ transform: `scale(${zoom})` }}
+                    onPointerDown={() => isEditMode && !isDrawingLazo && setSelectedItemId(null)}
+                >
+                    {/* Capa de intercepción para dibujar el lazo */}
+                    {isDrawingLazo && (
+                        <div className="absolute inset-0 z-[200] cursor-crosshair" onPointerDown={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setLazoPoints(prev => [...prev, { x: (e.clientX - rect.left) / zoom, y: (e.clientY - rect.top) / zoom }]); }}>
+                            <svg className="w-full h-full pointer-events-none drop-shadow-md">
+                                {lazoPoints.length > 0 && <path d={getLazoPath(lazoPoints, true)} fill="none" stroke="#1f2937" strokeWidth="3" strokeDasharray="8 8" strokeLinecap="round" strokeLinejoin="round" />}
+                                {lazoPoints.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r="5" fill="#3b82f6" stroke="white" strokeWidth="2" />)}
+                            </svg>
+                        </div>
+                    )}
 
-                {/* Capa de intercepción para dibujar el lazo */}
-                {isDrawingLazo && (
-                    <div className="absolute inset-0 z-[200] cursor-crosshair" onPointerDown={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setLazoPoints(prev => [...prev, { x: e.clientX - rect.left, y: e.clientY - rect.top }]); }}>
-                        <svg className="w-full h-full pointer-events-none drop-shadow-md">
-                            {lazoPoints.length > 0 && <path d={getLazoPath(lazoPoints, true)} fill="none" stroke="#1f2937" strokeWidth="3" strokeDasharray="8 8" strokeLinecap="round" strokeLinejoin="round" />}
-                            {lazoPoints.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r="5" fill="#3b82f6" stroke="white" strokeWidth="2" />)}
-                        </svg>
-                        <div className="absolute bottom-10 left-1/2 -translate-x-1/2 bg-white/95 backdrop-blur-md p-5 rounded-2xl shadow-2xl flex items-center gap-6 pointer-events-auto border border-stone-200" onPointerDown={(e) => e.stopPropagation()}>
-                            <div><p className="font-bold text-stone-800 text-lg">Trazando Lazo...</p><p className="text-sm text-stone-500">Haz clic en diferentes puntos para dibujar</p></div>
-                            <div className="flex gap-3"><button onClick={() => { setIsDrawingLazo(false); setLazoPoints([]); }} className="px-5 py-2 hover:bg-stone-100 rounded-full font-medium hover:scale-105 active:scale-95 transition-all text-stone-600">Cancelar</button><button onClick={finishDrawingLazo} className="px-6 py-2 bg-stone-800 text-white rounded-full font-bold shadow-md hover:bg-stone-700 hover:scale-105 active:scale-95 transition-all">Terminar Lazo</button></div>
+                    <div className="w-full h-full relative pointer-events-none">
+                        <div className="pointer-events-auto w-full h-full">
+                            {activePhotos.map(photo => (
+                                <InteractablePhoto key={photo.id} photo={photo} updatePhoto={updatePhoto} deletePhoto={(id) => { setDeletePhotoId(id); setSelectedItemId(null); }} isEditMode={isEditMode && !isDrawingLazo} isSelected={selectedItemId === photo.id} onSelect={() => setSelectedItemId(photo.id)} onBringToFront={bringToFront} onClickView={(p) => setSelectedPhotoForDesc(p)} onEditClick={(p) => openStickerModal(p.type, p)} zoom={zoom} />
+                            ))}
                         </div>
                     </div>
-                )}
-
-                <div className="w-full h-full min-w-[100vw] min-h-[100vh] relative p-20" onPointerDown={() => isEditMode && !isDrawingLazo && setSelectedItemId(null)}>
-                    {activePhotos.map(photo => (
-                        <InteractablePhoto key={photo.id} photo={photo} updatePhoto={updatePhoto} deletePhoto={(id) => { setDeletePhotoId(id); setSelectedItemId(null); }} isEditMode={isEditMode && !isDrawingLazo} isSelected={selectedItemId === photo.id} onSelect={() => setSelectedItemId(photo.id)} onBringToFront={bringToFront} onClickView={(p) => setSelectedPhotoForDesc(p)} onEditClick={(p) => openStickerModal(p.type, p)} />
-                    ))}
                 </div>
             </div>
 
-            {/* MODAL MODO FACEBOOK (PANTALLA COMPLETA) */}
+            {/* PANEL FIJO MIENTRAS SE DIBUJA EL LAZO */}
+            {isDrawingLazo && (
+                <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-white/95 backdrop-blur-md p-5 rounded-2xl shadow-[0_20px_60px_-15px_rgba(0,0,0,0.3)] flex items-center gap-6 border border-stone-200 z-[99999]">
+                    <div><p className="font-bold text-stone-800 text-lg">Trazando Lazo...</p><p className="text-sm text-stone-500">Haz clic en diferentes puntos para dibujar</p></div>
+                    <div className="flex gap-3"><button onClick={() => { setIsDrawingLazo(false); setLazoPoints([]); }} className="px-5 py-2 hover:bg-stone-100 rounded-full font-medium hover:scale-105 active:scale-95 transition-all text-stone-600">Cancelar</button><button onClick={finishDrawingLazo} className="px-6 py-2 bg-stone-800 text-white rounded-full font-bold shadow-md hover:bg-stone-700 hover:scale-105 active:scale-95 transition-all">Terminar Lazo</button></div>
+                </div>
+            )}
+
+            {/* MODAL MODO FACEBOOK (PANTALLA COMPLETA) - z-[99999] */}
             {selectedPhotoForDesc && !isEditMode && (
-                <div className="fixed inset-0 bg-black/95 z-[99999] flex flex-col md:flex-row animate-in fade-in duration-300" onClick={() => setSelectedPhotoForDesc(null)}>
+                <div className="fixed inset-0 bg-black/95 z-[99999] flex flex-col md:flex-row animate-in fade-in duration-300 print:hidden" onClick={() => setSelectedPhotoForDesc(null)}>
                     <button className="absolute top-4 left-4 z-50 text-white/50 hover:text-white p-2 hover:scale-110 active:scale-95 transition-all" onClick={() => setSelectedPhotoForDesc(null)}><X size={32} /></button>
                     <div className="flex-1 p-6 md:p-12 flex items-center justify-center relative"><img src={selectedPhotoForDesc.src} alt="Detalle" className="max-w-full max-h-full object-contain drop-shadow-2xl" onClick={(e) => e.stopPropagation()} /></div>
                     <div className="w-full md:w-[400px] h-1/3 md:h-full bg-white shadow-2xl flex flex-col relative z-10 slide-in-from-bottom-full md:slide-in-from-right-full duration-300" onClick={(e) => e.stopPropagation()}>
@@ -444,12 +490,12 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
 
             {/* OTROS MODALES DE EDICIÓN (z-[99999]) */}
             {deletePhotoId && (
-                <div className="fixed inset-0 bg-stone-900/60 z-[99999] flex items-center justify-center p-4 backdrop-blur-sm"><div className="bg-white p-8 rounded-3xl w-full max-w-sm"><h2 className="text-2xl font-bold mb-4">Eliminar Elemento</h2><div className="flex justify-end gap-3"><button onClick={() => setDeletePhotoId(null)} className="px-5 py-2 hover:bg-stone-100 rounded-full font-medium hover:scale-105 active:scale-95 transition-all">Cancelar</button><button onClick={confirmDeletePhoto} className="px-6 py-2 bg-rose-600 text-white rounded-full font-bold hover:scale-105 active:scale-95 transition-all shadow-md hover:bg-rose-700">Eliminar</button></div></div></div>
+                <div className="fixed inset-0 bg-stone-900/60 z-[99999] flex items-center justify-center p-4 backdrop-blur-sm print:hidden"><div className="bg-white p-8 rounded-3xl w-full max-w-sm"><h2 className="text-2xl font-bold mb-4">Eliminar Elemento</h2><div className="flex justify-end gap-3"><button onClick={() => setDeletePhotoId(null)} className="px-5 py-2 hover:bg-stone-100 rounded-full font-medium hover:scale-105 active:scale-95 transition-all">Cancelar</button><button onClick={confirmDeletePhoto} className="px-6 py-2 bg-rose-600 text-white rounded-full font-bold hover:scale-105 active:scale-95 transition-all shadow-md hover:bg-rose-700">Eliminar</button></div></div></div>
             )}
 
             {/* Modal: Dibujo Libre (NUEVO) */}
             {stickerModalType === 'drawing' && (
-                <div className="fixed inset-0 bg-stone-900/60 z-[99999] flex items-center justify-center p-4 backdrop-blur-sm">
+                <div className="fixed inset-0 bg-stone-900/60 z-[99999] flex items-center justify-center p-4 backdrop-blur-sm print:hidden">
                     <div className="bg-white rounded-3xl p-8 w-full max-w-md shadow-2xl">
                         <h2 className="text-2xl font-bold mb-4 flex items-center gap-2"><Brush /> {editingStickerId ? 'Editar Dibujo' : 'Nuevo Dibujo Libre'}</h2>
 
@@ -465,20 +511,12 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                             </div>
                         </div>
 
-                        <div className="border-2 border-stone-200 rounded-xl overflow-hidden mb-4 bg-[url('https://www.transparenttextures.com/patterns/cream-paper.png')] cursor-crosshair shadow-inner">
-                            <canvas
-                                ref={drawingCanvasRef}
-                                width={400} height={300}
-                                className="w-full h-auto block touch-none"
-                                onPointerDown={startFreeDrawing}
-                                onPointerMove={doFreeDrawing}
-                                onPointerUp={stopFreeDrawing}
-                                onPointerOut={stopFreeDrawing}
-                            />
+                        <div className="border-2 border-stone-200 rounded-xl overflow-hidden mb-4 bg-[url('https://www.transparenttextures.com/patterns/cream-paper.png')] cursor-crosshair shadow-inner relative">
+                            <canvas ref={drawingCanvasRef} width={400} height={300} className="w-full h-auto block touch-none" onPointerDown={startFreeDrawing} onPointerMove={doFreeDrawing} onPointerUp={stopFreeDrawing} onPointerOut={stopFreeDrawing} />
                         </div>
 
                         <div className="flex justify-between items-center">
-                            <button onClick={clearFreeCanvas} className="text-sm font-bold text-rose-600 hover:bg-rose-50 px-3 py-1.5 rounded-lg transition-colors">Limpiar</button>
+                            <button onClick={clearFreeCanvas} className="text-sm font-bold text-rose-600 hover:bg-rose-50 px-3 py-1.5 rounded-lg transition-colors">Limpiar Lienzo</button>
                             <div className="flex gap-3">
                                 <button onClick={() => { setStickerModalType(null); setEditingStickerId(null); }} className="px-5 py-2 font-medium hover:bg-stone-100 rounded-full hover:scale-105 active:scale-95 transition-all text-stone-600">Cancelar</button>
                                 <button onClick={() => handleSaveSticker('drawing')} className="px-6 py-2 bg-stone-800 text-white rounded-full font-bold shadow-md hover:bg-stone-700 hover:scale-105 active:scale-95 transition-all">Guardar</button>
@@ -490,7 +528,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
 
             {/* Modal: Editar Imagen */}
             {stickerModalType === 'image' && (
-                <div className="fixed inset-0 bg-stone-900/60 z-[99999] flex items-center justify-center p-4 backdrop-blur-sm">
+                <div className="fixed inset-0 bg-stone-900/60 z-[99999] flex items-center justify-center p-4 backdrop-blur-sm print:hidden">
                     <div className="bg-white rounded-3xl p-8 w-full max-w-md shadow-2xl">
                         <h2 className="text-2xl font-bold mb-6 flex items-center gap-2 text-stone-800"><ImagePlus /> Detalles de la Foto</h2>
                         <div className="bg-stone-50 p-4 rounded-xl border border-stone-200 mb-6">
@@ -512,7 +550,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
 
             {/* Modal: Editar Lazo */}
             {stickerModalType === 'lazo' && (
-                <div className="fixed inset-0 bg-stone-900/60 z-[99999] flex items-center justify-center p-4 backdrop-blur-sm">
+                <div className="fixed inset-0 bg-stone-900/60 z-[99999] flex items-center justify-center p-4 backdrop-blur-sm print:hidden">
                     <div className="bg-white rounded-3xl p-8 w-full max-w-md shadow-2xl">
                         <h2 className="text-2xl font-bold mb-6 flex items-center gap-2 text-stone-800"><PenTool /> Editar Lazo / Conector</h2>
 
@@ -548,52 +586,45 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                 </div>
             )}
 
-            {/* Modal: Post-it */}
-            {stickerModalType === 'postit' && (
-                <div className="fixed inset-0 bg-stone-900/60 z-[99999] flex items-center justify-center p-4 backdrop-blur-sm">
+            {/* Modales: Post-it, Fecha, Enlace, Ubicación, Canción, Contador */}
+            {(stickerModalType === 'postit' || stickerModalType === 'date' || stickerModalType === 'link' || stickerModalType === 'location' || stickerModalType === 'music' || stickerModalType === 'counter') && (
+                <div className="fixed inset-0 bg-stone-900/60 z-[99999] flex items-center justify-center p-4 backdrop-blur-sm print:hidden">
                     <div className="bg-white rounded-3xl p-8 w-full max-w-sm shadow-2xl">
-                        <h2 className="text-2xl font-bold mb-4 flex items-center gap-2"><StickyNote /> {editingStickerId ? 'Editar Post-it' : 'Nuevo Post-it'}</h2>
+                        <h2 className="text-2xl font-bold mb-4 flex items-center gap-2">
+                            {stickerModalType === 'postit' && <StickyNote />}
+                            {stickerModalType === 'date' && <Calendar />}
+                            {stickerModalType === 'link' && <LinkIcon />}
+                            {stickerModalType === 'location' && <MapPin />}
+                            {stickerModalType === 'music' && <Music />}
+                            {stickerModalType === 'counter' && <Hash />}
+                            {editingStickerId ? 'Editar Elemento' : 'Nuevo Elemento'}
+                        </h2>
                         {renderStyleControls()}
-                        <textarea value={stickerInputText} onChange={(e) => setStickerInputText(e.target.value)} placeholder="Escribe tu nota..." className="w-full h-32 p-4 rounded-xl resize-none font-serif text-lg mb-6 outline-none focus:ring-2 focus:ring-stone-400 border border-stone-200 shadow-inner" style={{ backgroundColor: stickerBgColor, color: stickerTextColor, fontWeight: stickerIsBold ? 'bold' : 'normal', fontStyle: stickerIsItalic ? 'italic' : 'normal' }} autoFocus />
-                        <div className="flex justify-end gap-3"><button onClick={() => { setStickerModalType(null); setEditingStickerId(null); }} className="px-5 py-2 font-medium hover:bg-stone-100 rounded-full hover:scale-105 active:scale-95 transition-all">Cancelar</button><button onClick={() => handleSaveSticker('postit')} className="px-6 py-2 bg-stone-800 text-white rounded-full font-bold shadow-md hover:scale-105 active:scale-95 transition-all">{editingStickerId ? 'Guardar' : 'Pegar'}</button></div>
-                    </div>
-                </div>
-            )}
 
-            {/* Modal: Fecha */}
-            {stickerModalType === 'date' && (
-                <div className="fixed inset-0 bg-stone-900/60 z-[99999] flex items-center justify-center p-4 backdrop-blur-sm">
-                    <div className="bg-white rounded-3xl p-8 w-full max-w-sm shadow-2xl">
-                        <h2 className="text-2xl font-bold mb-4 flex items-center gap-2"><Calendar /> {editingStickerId ? 'Editar Fecha' : 'Seleccionar Fecha'}</h2>
-                        {renderStyleControls()}
-                        <input type="date" value={stickerDate} onChange={(e) => setStickerDate(e.target.value)} className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl outline-none mb-8 text-xl text-center font-bold" />
-                        <div className="flex justify-end gap-3"><button onClick={() => { setStickerModalType(null); setEditingStickerId(null); }} className="px-5 py-2 font-medium hover:bg-stone-100 rounded-full hover:scale-105 active:scale-95 transition-all">Cancelar</button><button onClick={() => handleSaveSticker('date')} className="px-6 py-2 bg-stone-800 text-white rounded-full font-bold shadow-md hover:scale-105 active:scale-95 transition-all">{editingStickerId ? 'Guardar' : 'Añadir Fecha'}</button></div>
-                    </div>
-                </div>
-            )}
+                        {/* Renderizado condicional de los inputs según el tipo */}
+                        {stickerModalType === 'postit' && (
+                            <textarea value={stickerInputText} onChange={(e) => setStickerInputText(e.target.value)} placeholder="Escribe tu nota..." className="w-full h-32 p-4 rounded-xl resize-none font-serif text-lg mb-6 outline-none focus:ring-2 focus:ring-stone-400 border border-stone-200 shadow-inner" style={{ backgroundColor: stickerBgColor, color: stickerTextColor, fontWeight: stickerIsBold ? 'bold' : 'normal', fontStyle: stickerIsItalic ? 'italic' : 'normal' }} autoFocus />
+                        )}
+                        {stickerModalType === 'date' && (
+                            <input type="date" value={stickerDate} onChange={(e) => setStickerDate(e.target.value)} className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl outline-none mb-8 text-xl text-center font-bold" />
+                        )}
+                        {(stickerModalType === 'link' || stickerModalType === 'location' || stickerModalType === 'music') && (
+                            <>
+                                <input type="text" value={stickerInputText} onChange={(e) => setStickerInputText(e.target.value)} placeholder={stickerModalType === 'location' ? "Texto (Ej. Parque Estatal)" : stickerModalType === 'music' ? "Canción - Artista" : "Texto del botón"} className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl mb-4 font-medium text-center" autoFocus />
+                                <input type="url" value={stickerInputUrl} onChange={(e) => setStickerInputUrl(e.target.value)} placeholder={stickerModalType === 'location' ? "Enlace de Maps (Opcional)" : stickerModalType === 'music' ? "Enlace a Spotify/YouTube" : "https://..."} className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl mb-8 text-sm" />
+                            </>
+                        )}
+                        {stickerModalType === 'counter' && (
+                            <div className="flex gap-3 mb-8">
+                                <input type="text" value={stickerInputUrl} onChange={(e) => setStickerInputUrl(e.target.value)} placeholder="0" className="w-24 p-4 bg-stone-50 border border-stone-200 rounded-xl outline-none font-black text-center text-3xl" autoFocus />
+                                <input type="text" value={stickerInputText} onChange={(e) => setStickerInputText(e.target.value)} placeholder="Días, Años, Fotos..." className="flex-1 p-4 bg-stone-50 border border-stone-200 rounded-xl outline-none font-bold uppercase tracking-widest text-sm" />
+                            </div>
+                        )}
 
-            {/* Modal: Enlace */}
-            {stickerModalType === 'link' && (
-                <div className="fixed inset-0 bg-stone-900/60 z-[99999] flex items-center justify-center p-4 backdrop-blur-sm">
-                    <div className="bg-white rounded-3xl p-8 w-full max-w-sm shadow-2xl">
-                        <h2 className="text-2xl font-bold mb-4 text-blue-600 flex items-center gap-2"><LinkIcon /> {editingStickerId ? 'Editar Enlace' : 'Nuevo Enlace'}</h2>
-                        {renderStyleControls()}
-                        <input type="text" value={stickerInputText} onChange={(e) => setStickerInputText(e.target.value)} placeholder="Texto del botón" className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl mb-4 font-medium" autoFocus />
-                        <input type="url" value={stickerInputUrl} onChange={(e) => setStickerInputUrl(e.target.value)} placeholder="https://..." className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl mb-8" />
-                        <div className="flex justify-end gap-3"><button onClick={() => { setStickerModalType(null); setEditingStickerId(null); }} className="px-5 py-2 font-medium hover:bg-stone-100 rounded-full hover:scale-105 active:scale-95 transition-all">Cancelar</button><button onClick={() => handleSaveSticker('link')} className="px-6 py-2 bg-blue-600 text-white rounded-full font-bold shadow-md hover:scale-105 active:scale-95 transition-all">{editingStickerId ? 'Guardar' : 'Añadir'}</button></div>
-                    </div>
-                </div>
-            )}
-
-            {/* Modal: Ubicación */}
-            {stickerModalType === 'location' && (
-                <div className="fixed inset-0 bg-stone-900/60 z-[99999] flex items-center justify-center p-4 backdrop-blur-sm">
-                    <div className="bg-white rounded-3xl p-8 w-full max-w-sm shadow-2xl">
-                        <h2 className="text-2xl font-bold mb-4 text-rose-600 flex items-center gap-2"><MapPin /> {editingStickerId ? 'Editar Ubicación' : 'Ubicación'}</h2>
-                        {renderStyleControls()}
-                        <input type="text" value={stickerInputText} onChange={(e) => setStickerInputText(e.target.value)} placeholder="Texto (Ej. Parque Estatal)" className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl mb-4 font-medium text-center" autoFocus />
-                        <input type="url" value={stickerInputUrl} onChange={(e) => setStickerInputUrl(e.target.value)} placeholder="Enlace de Google Maps (Opcional)" className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl mb-8 text-sm" />
-                        <div className="flex justify-end gap-3"><button onClick={() => { setStickerModalType(null); setEditingStickerId(null); }} className="px-5 py-2 font-medium hover:bg-stone-100 rounded-full hover:scale-105 active:scale-95 transition-all">Cancelar</button><button onClick={() => handleSaveSticker('location')} className="px-6 py-2 bg-rose-600 text-white rounded-full font-bold shadow-md hover:scale-105 active:scale-95 transition-all">{editingStickerId ? 'Guardar' : 'Añadir'}</button></div>
+                        <div className="flex justify-end gap-3">
+                            <button onClick={() => { setStickerModalType(null); setEditingStickerId(null); }} className="px-5 py-2 font-medium hover:bg-stone-100 rounded-full hover:scale-105 active:scale-95 transition-all text-stone-600">Cancelar</button>
+                            <button onClick={() => handleSaveSticker(stickerModalType)} className="px-6 py-2 bg-stone-800 text-white rounded-full font-bold shadow-md hover:scale-105 active:scale-95 transition-all">{editingStickerId ? 'Guardar' : 'Añadir'}</button>
+                        </div>
                     </div>
                 </div>
             )}
