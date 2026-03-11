@@ -3,7 +3,7 @@ import { collection, doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { db, appId } from '../firebase';
 import { compressImage } from '../utils';
 import InteractablePhoto from './InteractablePhoto';
-import { ArrowLeft, Layers, SmilePlus, ImagePlus, Check, Edit3, X, StickyNote, Calendar, Link as LinkIcon, Loader2, Trash2, ChevronUp, MessageSquareText, MapPin, Edit2, Palette, PenTool, Brush, Music, Hash, Printer, ZoomIn, ZoomOut, Play, Pause, Square, Navigation, Lock, Unlock, Folder, FolderPlus } from 'lucide-react';
+import { ArrowLeft, Layers, SmilePlus, ImagePlus, Check, Edit3, X, StickyNote, Calendar, Link as LinkIcon, Loader2, Trash2, ChevronUp, MessageSquareText, MapPin, Edit2, Palette, PenTool, Brush, Music, Hash, Printer, ZoomIn, ZoomOut, Play, Pause, Square, Navigation, Lock, Unlock, Folder, FolderPlus, UploadCloud } from 'lucide-react';
 
 const CANVAS_BACKGROUNDS = {
     dots: { name: 'Puntos Clásicos', className: 'bg-[#f7f5f0] bg-[radial-gradient(#d1cfc7_2px,transparent_2px)] [background-size:32px_32px]' },
@@ -34,6 +34,19 @@ const getLazoPath = (pts, isSmooth) => {
     }
     return d;
 };
+
+// ESTILOS GLOBALES PARA ANIMACIONES CUSTOM
+const CustomAnimations = () => (
+    <style>
+        {`
+        @keyframes anim-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        @keyframes anim-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.15); } }
+        @keyframes anim-floatX { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(30px); } }
+        @keyframes anim-floatY { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-30px); } }
+        @keyframes anim-wiggle { 0%, 100% { transform: rotate(-15deg); } 50% { transform: rotate(15deg); } }
+        `}
+    </style>
+);
 
 export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCurrentView, setActiveAlbumId, setDbError }) {
     const [isEditMode, setIsEditMode] = useState(false);
@@ -74,10 +87,17 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
     const [tourSpeed, setTourSpeed] = useState(250);
     const [tourMessage, setTourMessage] = useState("");
     const [tourVisible, setTourVisible] = useState(false);
+
     const [animStyle, setAnimStyle] = useState("animate-bounce");
+    const [animType, setAnimType] = useState("none");
+    const [animDuration, setAnimDuration] = useState(3);
+    const [animDirection, setAnimDirection] = useState("alternate");
 
     const [openFolders, setOpenFolders] = useState({});
     const [assignFolderId, setAssignFolderId] = useState(null);
+
+    // NUEVO: Estado para Drag & Drop
+    const [dragOverFolderId, setDragOverFolderId] = useState(null);
 
     const [tourStatus, setTourStatus] = useState('idle');
     const [tourCurrentMessage, setTourCurrentMessage] = useState("");
@@ -285,6 +305,49 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
         setIsUploading(false); e.target.value = '';
     };
 
+    const handlePngUpload = async (e) => {
+        if (!user || !activeAlbum.id) return;
+        const files = Array.from(e.target.files);
+        if (!files.length) return;
+        setIsUploading(true);
+        setShowStickerMenu(false);
+        const maxZ = activePhotos.length > 0 ? Math.max(...activePhotos.map(p => p.zIndex || 0)) : 0;
+        const { startX, startY } = getCenterCoords(150);
+
+        try {
+            for (let i = 0; i < files.length; i++) {
+                if (files[i].type.startsWith('image/')) {
+                    const base64Data = await new Promise((resolve) => {
+                        const reader = new FileReader();
+                        reader.readAsDataURL(files[i]);
+                        reader.onload = (event) => {
+                            const img = new Image();
+                            img.src = event.target.result;
+                            img.onload = () => {
+                                const canvas = document.createElement('canvas');
+                                const MAX_SIZE = 400;
+                                let width = img.width; let height = img.height;
+                                if (width > height && width > MAX_SIZE) { height *= MAX_SIZE / width; width = MAX_SIZE; }
+                                else if (height > MAX_SIZE) { width *= MAX_SIZE / height; height = MAX_SIZE; }
+                                canvas.width = width; canvas.height = height;
+                                const ctx = canvas.getContext('2d');
+                                ctx.drawImage(img, 0, 0, width, height);
+                                resolve(canvas.toDataURL('image/png'));
+                            };
+                        };
+                    });
+
+                    await setDoc(doc(collection(db, 'artifacts', appId, 'photos')), {
+                        albumId: activeAlbum.id, type: 'custom_sticker', src: base64Data, x: startX + (i * 20), y: startY + (i * 20),
+                        width: 150, rotation: Math.floor(Math.random() * 20) - 10, zIndex: maxZ + i + 1,
+                        isLocked: false, folderId: null, animType: 'none', animDuration: 3, animDirection: 'alternate'
+                    });
+                }
+            }
+        } catch (error) { console.error(error); }
+        setIsUploading(false); e.target.value = '';
+    };
+
     const updatePhoto = useCallback(async (photoId, updates) => {
         try { await setDoc(doc(db, 'artifacts', appId, 'photos', photoId), updates, { merge: true }); }
         catch (error) { if (error.code === 'permission-denied') setDbError('permissions'); }
@@ -350,6 +413,10 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
         }
         if (type === 'folder') {
             await updatePhoto(editingStickerId, { content: stickerInputText, color: stickerBgColor });
+            setStickerModalType(null); setEditingStickerId(null); return;
+        }
+        if (type === 'custom_sticker') {
+            await updatePhoto(editingStickerId, { animType, animDuration, animDirection });
             setStickerModalType(null); setEditingStickerId(null); return;
         }
         if (type === 'lazo' || type === 'lazo_guia') {
@@ -459,6 +526,10 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                     setTourMessage(photoToEdit.tourMessage || "");
                     setTourVisible(photoToEdit.tourVisible || false);
                 }
+            } else if (type === 'custom_sticker') {
+                setAnimType(photoToEdit.animType || "none");
+                setAnimDuration(photoToEdit.animDuration || 3);
+                setAnimDirection(photoToEdit.animDirection || "alternate");
             } else if (type === 'drawing') {
                 setStickerBgColor(photoToEdit.color || "#1f2937");
                 setLazoThickness(photoToEdit.thickness || 3);
@@ -513,44 +584,52 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
     const folders = activePhotos.filter(p => p.type === 'folder').sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
     const items = activePhotos.filter(p => p.type !== 'folder').sort((a, b) => (b.zIndex || 0) - (a.zIndex || 0));
 
+    // RENDERIZADO DE ITEM EN EL MENÚ DE CAPAS CON DRAG AND DROP
     const renderLayerItem = (p) => {
-        const isEditable = !p.type || ['image', 'postit', 'date', 'link', 'music', 'counter', 'location', 'lazo', 'lazo_guia', 'drawing', 'animated'].includes(p.type);
+        const isEditable = !p.type || ['image', 'postit', 'date', 'link', 'music', 'counter', 'location', 'lazo', 'lazo_guia', 'drawing', 'animated', 'custom_sticker'].includes(p.type);
         return (
-            <div key={p.id} onClick={() => setSelectedItemId(p.id)} className={`flex items-center justify-between p-2 rounded-lg text-sm group cursor-pointer transition-all border ${selectedItemId === p.id ? 'bg-indigo-50 border-indigo-300 shadow-sm scale-[1.02]' : 'bg-white border-transparent hover:border-stone-200'} ${p.isLocked ? 'opacity-60 grayscale' : ''}`}>
-                <span className={`truncate w-24 font-medium text-[11px] ${selectedItemId === p.id ? 'text-indigo-800' : 'text-stone-600'}`}>
-                    {p.type === 'postit' ? 'Post-it' : p.type === 'date' ? 'Fecha' : p.type === 'location' ? 'Ubicación' : p.type === 'link' ? 'Enlace' : p.type === 'music' ? 'Canción' : p.type === 'counter' ? 'Contador' : p.type === 'lazo' ? 'Lazo' : p.type === 'lazo_guia' ? 'Lazo Guía' : p.type === 'drawing' ? 'Dibujo Libre' : p.type === 'animated' ? 'Animación' : p.type === 'emoji' ? p.content : 'Imagen'}
-                </span>
-                <div className="flex gap-0.5 opacity-40 group-hover:opacity-100 transition-opacity">
-
-                    <div className="relative">
+            <div key={p.id} className="flex flex-col">
+                <div
+                    draggable
+                    onDragStart={(e) => { e.dataTransfer.setData('itemId', p.id); }}
+                    onClick={() => setSelectedItemId(p.id)}
+                    className={`flex items-center justify-between p-2 rounded-lg text-sm group cursor-grab active:cursor-grabbing transition-all border ${selectedItemId === p.id ? 'bg-indigo-50 border-indigo-300 shadow-sm scale-[1.02]' : 'bg-white border-transparent hover:border-stone-200'} ${p.isLocked ? 'opacity-60 grayscale' : ''}`}
+                >
+                    <span className={`truncate w-24 font-medium text-[11px] pointer-events-none ${selectedItemId === p.id ? 'text-indigo-800' : 'text-stone-600'}`}>
+                        {p.type === 'postit' ? 'Post-it' : p.type === 'date' ? 'Fecha' : p.type === 'location' ? 'Ubicación' : p.type === 'link' ? 'Enlace' : p.type === 'music' ? 'Canción' : p.type === 'counter' ? 'Contador' : p.type === 'lazo' ? 'Lazo' : p.type === 'lazo_guia' ? 'Lazo Guía' : p.type === 'drawing' ? 'Dibujo Libre' : p.type === 'animated' ? 'Animación' : p.type === 'custom_sticker' ? 'Pegatina PNG' : p.type === 'emoji' ? p.content : 'Imagen'}
+                    </span>
+                    <div className="flex gap-0.5 opacity-40 group-hover:opacity-100 transition-opacity">
                         <button onClick={(e) => { e.stopPropagation(); setAssignFolderId(assignFolderId === p.id ? null : p.id); }} className="p-1 hover:bg-amber-100 text-amber-600 rounded transition-all" title="Asignar a carpeta"><FolderPlus size={12} /></button>
-                        {assignFolderId === p.id && (
-                            <div className="absolute right-0 top-full mt-1 bg-white border border-stone-200 z-[100000] p-1.5 flex flex-col gap-0.5 rounded-xl shadow-xl w-36 cursor-default">
-                                <button onClick={(e) => { e.stopPropagation(); updatePhoto(p.id, { folderId: null }); setAssignFolderId(null); }} className="text-[10px] font-bold text-left px-2 py-1.5 hover:bg-stone-100 rounded-lg text-stone-500">Sin carpeta</button>
-                                {folders.map(f => (
-                                    <button key={f.id} onClick={(e) => { e.stopPropagation(); updatePhoto(p.id, { folderId: f.id }); setAssignFolderId(null); }} className="text-[10px] font-bold text-left px-2 py-1.5 hover:bg-stone-100 rounded-lg flex items-center gap-1.5 text-stone-700">
-                                        <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: f.color }}></div>
-                                        <span className="truncate">{f.content}</span>
-                                    </button>
-                                ))}
-                            </div>
-                        )}
+                        <button onClick={(e) => { e.stopPropagation(); updatePhoto(p.id, { isLocked: !p.isLocked }); }} className="p-1 hover:bg-stone-200 text-stone-700 rounded transition-all" title={p.isLocked ? 'Desbloquear' : 'Bloquear'}>
+                            {p.isLocked ? <Lock size={12} className="text-rose-500" /> : <Unlock size={12} />}
+                        </button>
+                        {isEditable && <button onClick={(e) => { e.stopPropagation(); openStickerModal(p.type, p); }} className="p-1 hover:bg-blue-100 text-blue-600 rounded transition-all" title="Editar"><Edit2 size={12} /></button>}
+                        <button onClick={(e) => { e.stopPropagation(); bringToFront(p.id); }} className="p-1 hover:bg-indigo-100 text-indigo-600 rounded transition-all" title="Traer al frente"><ChevronUp size={12} /></button>
+                        <button onClick={(e) => { e.stopPropagation(); setDeletePhotoId(p.id); }} className="p-1 hover:bg-rose-100 text-rose-600 rounded transition-all" title="Eliminar"><Trash2 size={12} /></button>
                     </div>
-
-                    <button onClick={(e) => { e.stopPropagation(); updatePhoto(p.id, { isLocked: !p.isLocked }); }} className="p-1 hover:bg-stone-200 text-stone-700 rounded transition-all" title={p.isLocked ? 'Desbloquear' : 'Bloquear'}>
-                        {p.isLocked ? <Lock size={12} className="text-rose-500" /> : <Unlock size={12} />}
-                    </button>
-                    {isEditable && <button onClick={(e) => { e.stopPropagation(); openStickerModal(p.type, p); }} className="p-1 hover:bg-blue-100 text-blue-600 rounded transition-all" title="Editar"><Edit2 size={12} /></button>}
-                    <button onClick={(e) => { e.stopPropagation(); bringToFront(p.id); }} className="p-1 hover:bg-indigo-100 text-indigo-600 rounded transition-all" title="Traer al frente"><ChevronUp size={12} /></button>
-                    <button onClick={(e) => { e.stopPropagation(); setDeletePhotoId(p.id); }} className="p-1 hover:bg-rose-100 text-rose-600 rounded transition-all" title="Eliminar"><Trash2 size={12} /></button>
                 </div>
+
+                {/* MENÚ DE CARPETAS INLINE (Ya no se corta) */}
+                {assignFolderId === p.id && (
+                    <div className="mt-1 bg-white border border-stone-200 p-1.5 flex flex-col gap-0.5 rounded-xl shadow-sm z-10 w-full animate-in fade-in slide-in-from-top-2">
+                        <button onClick={(e) => { e.stopPropagation(); updatePhoto(p.id, { folderId: null }); setAssignFolderId(null); }} className="text-[10px] font-bold text-left px-2 py-1.5 hover:bg-stone-100 rounded-lg text-stone-500 w-full">↗️ Sacar de la carpeta</button>
+                        {folders.map(f => (
+                            <button key={f.id} onClick={(e) => { e.stopPropagation(); updatePhoto(p.id, { folderId: f.id }); setAssignFolderId(null); setOpenFolders(prev => ({ ...prev, [f.id]: true })); }} className="text-[10px] font-bold text-left px-2 py-1.5 hover:bg-stone-100 rounded-lg flex items-center gap-1.5 text-stone-700 w-full">
+                                <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: f.color }}></div>
+                                <span className="truncate">{f.content}</span>
+                            </button>
+                        ))}
+                    </div>
+                )}
             </div>
         );
     };
 
     return (
         <div className="h-screen flex flex-col font-sans overflow-hidden bg-stone-100 relative">
-            {/* HEADER CONTROLS (Ocultos al imprimir) */}
+            <CustomAnimations />
+
+            {/* HEADER CONTROLS */}
             <div className="absolute top-6 left-6 right-6 z-[99999] flex justify-between gap-4 pointer-events-none print:hidden">
                 <div className="bg-white/90 backdrop-blur-md px-5 py-3 rounded-2xl shadow-sm border border-white flex items-center gap-5 pointer-events-auto">
                     <button onClick={() => { setCurrentView('dashboard'); setActiveAlbumId(null); setSelectedItemId(null); stopTour(); }} className="p-2 text-stone-500 hover:bg-stone-100 rounded-full hover:scale-110 active:scale-95 transition-all"><ArrowLeft size={22} /></button>
@@ -597,8 +676,13 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                                             <button onClick={() => { setDrawingLazoType('lazo_guia'); setShowStickerMenu(false); setSelectedItemId(null); }} className="flex-1 flex flex-col items-center justify-center gap-1 p-2 bg-blue-600 text-white rounded-xl text-[10px] font-bold hover:scale-[1.02] active:scale-95 transition-all shadow-md"><Navigation size={16} /> Lazo Guía (Tour)</button>
                                             <button onClick={() => openStickerModal('drawing')} className="flex-1 flex flex-col items-center justify-center gap-1 p-2 bg-purple-600 text-white rounded-xl text-[10px] font-bold hover:scale-[1.02] active:scale-95 transition-all shadow-md"><Brush size={16} /> Dibujo Libre</button>
                                         </div>
+                                        <div className="px-1 pb-2">
+                                            <label className="flex items-center justify-center gap-2 w-full p-2 bg-emerald-100 text-emerald-800 rounded-xl text-xs font-bold hover:bg-emerald-200 cursor-pointer transition-all shadow-sm">
+                                                {isUploading ? <Loader2 size={16} className="animate-spin" /> : <UploadCloud size={16} />} Subir PNG (Animable)
+                                                <input type="file" multiple accept="image/png, image/gif, image/webp" className="hidden" onChange={handlePngUpload} disabled={isUploading} />
+                                            </label>
+                                        </div>
                                         <div className="border-t border-stone-100 my-1"></div>
-
                                         <div className="flex flex-col gap-4 px-3 py-3 max-h-80 overflow-y-auto">
                                             <div><p className="text-[10px] font-bold text-blue-500 uppercase tracking-wider mb-2">Animaciones (Solo en Recorrido)</p><div className="flex flex-wrap gap-2">{['✨', '💖', '🔥', '🦋', '🫧', '🎉', '🕊️', '☄️'].map(e => <button key={e} onClick={() => handleAddEmoji(e, true)} className="text-xl hover:scale-125 active:scale-95 transition-transform" title="Añadir animación">{e}</button>)}</div></div>
                                             <div><p className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-2">Pines y Papelería</p><div className="flex flex-wrap gap-2">{['📌', '📍', '📎', '🖇️', '🏷️', '🩹', '📏', '✂️', '🗑️', '📋'].map(e => <button key={e} onClick={() => handleAddEmoji(e)} className="text-xl hover:scale-125 active:scale-95 transition-transform" title="Añadir al lienzo">{e}</button>)}</div></div>
@@ -641,7 +725,6 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
             {/* CONTROLES DEL TOUR Y TIMELINE (VISTA GUIADA) */}
             {!isEditMode && hasGuideLazos && (
                 <div className="absolute bottom-8 left-8 right-8 z-[9000] flex flex-col items-start gap-3 pointer-events-none print:hidden max-w-3xl">
-
                     {tourStatus !== 'idle' && (
                         <div className="bg-white/90 backdrop-blur-md rounded-2xl shadow-xl border border-blue-200 p-4 w-[320px] pointer-events-auto animate-in slide-in-from-left-8">
                             <div className="flex items-center justify-between mb-2">
@@ -656,7 +739,6 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                             </div>
                         </div>
                     )}
-
                     <div className="flex bg-white/90 backdrop-blur-md rounded-2xl shadow-xl border border-blue-200 overflow-hidden pointer-events-auto animate-in slide-in-from-left-8">
                         <div className="bg-blue-600 text-white px-4 py-3 flex items-center justify-center font-bold text-sm tracking-wider uppercase">Tour</div>
                         <button onClick={playTour} disabled={tourStatus === 'playing' || tourStatus === 'message'} className="p-3 hover:bg-blue-50 text-blue-600 disabled:opacity-30 disabled:hover:bg-transparent transition-colors" title="Reproducir"><Play size={20} fill="currentColor" /></button>
@@ -677,7 +759,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                 </div>
             )}
 
-            {/* MENÚ DE CAPAS CON CARPETAS */}
+            {/* MENÚ DE CAPAS CON CARPETAS (DRAG & DROP) */}
             {showLayers && isEditMode && (
                 <div className="absolute top-24 right-6 w-80 bg-white/95 backdrop-blur-md rounded-2xl shadow-xl p-4 z-[99999] border border-stone-200 print:hidden flex flex-col max-h-[80vh]">
                     <div className="flex items-center justify-between mb-4">
@@ -690,9 +772,23 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                         </div>
                     </div>
 
-                    <div className="flex-1 overflow-y-auto pr-1 space-y-2">
+                    <div className="flex-1 overflow-y-auto pr-1 space-y-2 pb-2">
                         {folders.map(folder => (
-                            <div key={folder.id} className="border border-stone-200 rounded-xl overflow-hidden shadow-sm">
+                            <div
+                                key={folder.id}
+                                className={`border rounded-xl overflow-hidden shadow-sm transition-all duration-200 ${dragOverFolderId === folder.id ? 'border-blue-500 bg-blue-50 scale-[1.02] ring-2 ring-blue-500/20' : 'border-stone-200'}`}
+                                onDragOver={(e) => { e.preventDefault(); setDragOverFolderId(folder.id); }}
+                                onDragLeave={() => setDragOverFolderId(null)}
+                                onDrop={(e) => {
+                                    e.preventDefault();
+                                    setDragOverFolderId(null);
+                                    const itemId = e.dataTransfer.getData('itemId');
+                                    if (itemId && itemId !== folder.id) {
+                                        updatePhoto(itemId, { folderId: folder.id });
+                                        setOpenFolders(prev => ({ ...prev, [folder.id]: true }));
+                                    }
+                                }}
+                            >
                                 <div
                                     className="bg-stone-50 hover:bg-stone-100 p-2.5 flex justify-between items-center cursor-pointer transition-colors"
                                     onClick={() => setOpenFolders(prev => ({ ...prev, [folder.id]: !prev[folder.id] }))}
@@ -710,19 +806,32 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                                 {openFolders[folder.id] && (
                                     <div className="bg-stone-100 p-1.5 flex flex-col gap-1 border-t border-stone-200 shadow-inner">
                                         {items.filter(i => i.folderId === folder.id).map(renderLayerItem)}
-                                        {items.filter(i => i.folderId === folder.id).length === 0 && <p className="text-[10px] text-stone-400 text-center py-2 italic">Carpeta vacía</p>}
+                                        {items.filter(i => i.folderId === folder.id).length === 0 && <p className="text-[10px] text-stone-400 text-center py-2 italic pointer-events-none">Carpeta vacía</p>}
                                     </div>
                                 )}
                             </div>
                         ))}
-                        <div className="pt-2 flex flex-col gap-1">
+
+                        {/* ZONA DE SOLTADO PARA SACAR DE CARPETAS */}
+                        <div
+                            className={`pt-2 flex flex-col gap-1 pb-4 min-h-[60px] rounded-xl transition-all border-2 ${dragOverFolderId === 'root' ? 'border-dashed border-stone-400 bg-stone-100/50' : 'border-transparent'}`}
+                            onDragOver={(e) => { e.preventDefault(); setDragOverFolderId('root'); }}
+                            onDragLeave={() => setDragOverFolderId(null)}
+                            onDrop={(e) => {
+                                e.preventDefault();
+                                setDragOverFolderId(null);
+                                const itemId = e.dataTransfer.getData('itemId');
+                                if (itemId) updatePhoto(itemId, { folderId: null });
+                            }}
+                        >
                             {items.filter(i => !i.folderId).map(renderLayerItem)}
+                            {items.filter(i => !i.folderId).length === 0 && <p className="text-[10px] text-stone-400 text-center py-4 italic pointer-events-none">Arrastra objetos aquí para sacarlos</p>}
                         </div>
                     </div>
                 </div>
             )}
 
-            {/* CANVAS PRINCIPAL Y ÁREA EXPANDIDA (Zoom Suave) */}
+            {/* CANVAS PRINCIPAL Y ÁREA EXPANDIDA */}
             <div
                 ref={scrollContainerRef}
                 className={`flex-1 relative w-full overflow-auto transition-colors duration-500 ${bgClass} print:bg-white print:overflow-visible`}
@@ -732,7 +841,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                     style={{ transform: `scale(${zoom})` }}
                     onPointerDown={() => isEditMode && !drawingLazoType && setSelectedItemId(null)}
                 >
-                    {/* AQUÍ SE APLICA EL MODO FANTASMA CUANDO ESTAMOS DIBUJANDO EL LAZO */}
+                    {/* MODO FANTASMA AL DIBUJAR LAZO (Z-INDEX 8000 + CURSOR CROSSHAIR) */}
                     {drawingLazoType && (
                         <div className="absolute inset-0 z-[8000] cursor-crosshair" onPointerDown={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setLazoPoints(prev => [...prev, { x: (e.clientX - rect.left) / zoom, y: (e.clientY - rect.top) / zoom }]); }}>
                             <svg className="w-full h-full pointer-events-none drop-shadow-md">
@@ -749,7 +858,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
 
                     <div className="w-full h-full relative pointer-events-none">
                         <div className="pointer-events-auto w-full h-full">
-                            {items.map(photo => (
+                            {activePhotos.map(photo => (
                                 <InteractablePhoto
                                     key={photo.id} photo={photo} updatePhoto={updatePhoto} deletePhoto={(id) => { setDeletePhotoId(id); setSelectedItemId(null); }}
                                     isEditMode={isEditMode && !drawingLazoType}
@@ -800,6 +909,43 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                             <input type="color" value={stickerBgColor} onChange={e => setStickerBgColor(e.target.value)} className="w-10 h-10 p-0 border-2 border-stone-300 rounded cursor-pointer" /> Color de Identificación
                         </label>
                         <div className="flex justify-end gap-3"><button onClick={() => { setStickerModalType(null); setEditingStickerId(null); }} className="px-5 py-2 font-medium hover:bg-stone-100 rounded-full hover:scale-105 active:scale-95 transition-all text-stone-600">Cancelar</button><button onClick={() => handleSaveSticker('folder')} className="px-6 py-2 bg-stone-800 text-white rounded-full font-bold shadow-md hover:bg-stone-700 hover:scale-105 active:scale-95 transition-all">Guardar</button></div>
+                    </div>
+                </div>
+            )}
+
+            {/* Modal: Edición de Custom Sticker PNG */}
+            {stickerModalType === 'custom_sticker' && (
+                <div className="fixed inset-0 bg-stone-900/60 z-[99999] flex items-center justify-center p-4 backdrop-blur-sm print:hidden">
+                    <div className="bg-white rounded-3xl p-8 w-full max-w-sm shadow-2xl">
+                        <h2 className="text-2xl font-bold mb-6 flex items-center gap-2 text-stone-800"><ImagePlus /> Pegatina Animada</h2>
+
+                        <div className="bg-stone-50 p-4 rounded-xl border border-stone-200 mb-6">
+                            <p className="text-xs font-bold text-stone-500 uppercase tracking-wider mb-3">Tipo de Animación</p>
+                            <div className="grid grid-cols-2 gap-2 mb-4">
+                                <button onClick={() => setAnimType('none')} className={`py-2 text-sm rounded-lg font-bold border transition-all ${animType === 'none' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white border-stone-200 text-stone-700 hover:bg-stone-100'}`}>Ninguna</button>
+                                <button onClick={() => setAnimType('spin')} className={`py-2 text-sm rounded-lg font-bold border transition-all ${animType === 'spin' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white border-stone-200 text-stone-700 hover:bg-stone-100'}`}>Rotar</button>
+                                <button onClick={() => setAnimType('pulse')} className={`py-2 text-sm rounded-lg font-bold border transition-all ${animType === 'pulse' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white border-stone-200 text-stone-700 hover:bg-stone-100'}`}>Escalar</button>
+                                <button onClick={() => setAnimType('wiggle')} className={`py-2 text-sm rounded-lg font-bold border transition-all ${animType === 'wiggle' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white border-stone-200 text-stone-700 hover:bg-stone-100'}`}>Tambalear</button>
+                                <button onClick={() => setAnimType('floatX')} className={`py-2 text-sm rounded-lg font-bold border transition-all ${animType === 'floatX' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white border-stone-200 text-stone-700 hover:bg-stone-100'}`}>Mover ↔️</button>
+                                <button onClick={() => setAnimType('floatY')} className={`py-2 text-sm rounded-lg font-bold border transition-all ${animType === 'floatY' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white border-stone-200 text-stone-700 hover:bg-stone-100'}`}>Mover ↕️</button>
+                            </div>
+
+                            <div className="mb-4">
+                                <label className="flex justify-between text-xs font-bold text-stone-500 uppercase tracking-wider mb-2">
+                                    <span>Duración / Velocidad</span><span>{animDuration}s</span>
+                                </label>
+                                <input type="range" min="0.5" max="10" step="0.5" value={animDuration} onChange={(e) => setAnimDuration(parseFloat(e.target.value))} className="w-full accent-blue-600 cursor-pointer" />
+                            </div>
+
+                            <p className="text-xs font-bold text-stone-500 uppercase tracking-wider mb-3">Dirección</p>
+                            <div className="flex gap-2">
+                                <button onClick={() => setAnimDirection('normal')} className={`flex-1 py-1.5 text-xs rounded-lg font-bold border transition-all ${animDirection === 'normal' ? 'bg-stone-800 text-white border-stone-800' : 'bg-white border-stone-200 text-stone-700 hover:bg-stone-100'}`}>Normal</button>
+                                <button onClick={() => setAnimDirection('reverse')} className={`flex-1 py-1.5 text-xs rounded-lg font-bold border transition-all ${animDirection === 'reverse' ? 'bg-stone-800 text-white border-stone-800' : 'bg-white border-stone-200 text-stone-700 hover:bg-stone-100'}`}>Inversa</button>
+                                <button onClick={() => setAnimDirection('alternate')} className={`flex-1 py-1.5 text-xs rounded-lg font-bold border transition-all ${animDirection === 'alternate' ? 'bg-stone-800 text-white border-stone-800' : 'bg-white border-stone-200 text-stone-700 hover:bg-stone-100'}`}>Alterna</button>
+                            </div>
+                        </div>
+
+                        <div className="flex justify-end gap-3"><button onClick={() => { setStickerModalType(null); setEditingStickerId(null); }} className="px-5 py-2 font-medium hover:bg-stone-100 rounded-full hover:scale-105 active:scale-95 transition-all text-stone-600">Cancelar</button><button onClick={() => handleSaveSticker('custom_sticker')} className="px-6 py-2 bg-stone-800 text-white rounded-full font-bold shadow-md hover:bg-stone-700 hover:scale-105 active:scale-95 transition-all">Guardar Animación</button></div>
                     </div>
                 </div>
             )}
