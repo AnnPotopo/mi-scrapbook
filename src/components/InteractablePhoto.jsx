@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { RotateCw, Maximize2, Trash2, MessageSquareText, Calendar, Link as LinkIcon, MapPin, Edit2, Music, Hash, Lock } from 'lucide-react';
 
-export const getLazoPath = (pts, isSmooth) => {
+const getLazoPath = (pts, isSmooth) => {
     if (!pts || pts.length === 0) return "";
     if (pts.length === 1) return `M ${pts[0].x} ${pts[0].y}`;
     if (!isSmooth || pts.length < 3) return `M ${pts.map(p => `${p.x},${p.y}`).join(' L ')}`;
@@ -90,7 +90,13 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                 const currentAngle = Math.atan2(e.clientY - s.centerY, e.clientX - s.centerX);
                 const startAngle = Math.atan2(s.mouseY - s.centerY, s.mouseX - s.centerX);
                 const angleDiff = (currentAngle - startAngle) * (180 / Math.PI);
-                setLocalTransform(prev => ({ ...prev, rotation: s.rotation + angleDiff }));
+                let newRot = s.rotation + angleDiff;
+
+                if (e.shiftKey) {
+                    newRot = Math.round(newRot / 45) * 45;
+                }
+
+                setLocalTransform(prev => ({ ...prev, rotation: newRot }));
             }
             else if (interaction === 'dragPoint' && s.pointIndex !== null) {
                 const scale = localTransform.width / (photo.baseWidth || photo.width || 1);
@@ -141,12 +147,19 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
     const tapeStyle = photo.tapeStyle || 'top';
     const tapeGradient = 'linear-gradient(to right, rgba(255,255,255,0.1), rgba(255,255,255,0.6))';
 
-    const interactionEvents = (isDrawingMode || (photo.isLocked && isEditMode)) ? 'none' : 'auto';
+    // MAGIA DE BLOQUEO Y CUBIERTA FANTASMA
+    let interactionEvents = 'auto';
+    if (isDrawingMode) {
+        interactionEvents = 'none'; // Mientras dibujas un lazo, atraviesas todo
+    } else if (isEditMode && photo.isLocked) {
+        interactionEvents = 'none'; // Si está bloqueado en edición, lo atraviesas
+    } else if (!isEditMode && ['lazo', 'lazo_guia', 'drawing'].includes(photo.type)) {
+        // SOLUCIÓN: Fuera del modo edición, las "cajas invisibles" de los lazos y dibujos
+        // se vuelven intangibles para que puedas hacer clic a las fotos debajo de ellos.
+        interactionEvents = 'none';
+    }
 
-    // LÓGICA DE ANIMACIÓN PARA PNGs PERSONALIZADOS
-    const customAnimStyle = photo.type === 'custom_sticker' && photo.animType && photo.animType !== 'none'
-        ? { animation: `anim-${photo.animType} ${photo.animDuration || 3}s ${photo.animType === 'spin' ? 'linear' : 'ease-in-out'} ${photo.animDirection || 'alternate'} infinite` }
-        : {};
+    const lockedClass = photo.isLocked && isEditMode ? 'opacity-90' : '';
 
     return (
         <div
@@ -154,11 +167,14 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
             style={{
                 position: 'absolute', left: `${localTransform.x}px`, top: `${localTransform.y}px`,
                 width: `${localTransform.width}px`, transform: `rotate(${localTransform.rotation}deg)`,
-                zIndex: photo.zIndex || 1, touchAction: 'none', pointerEvents: interactionEvents
+                zIndex: photo.zIndex || 1, touchAction: 'none',
+                pointerEvents: interactionEvents // Se aplica la regla de intangibilidad
             }}
-            className={`group ${isEditMode && !photo.isLocked && !isDrawingMode ? 'cursor-move' : ''} ${!isEditMode && isLinkable ? 'cursor-pointer hover:scale-105 active:scale-95 transition-all duration-200' : (!isEditMode ? 'cursor-pointer hover:scale-[1.02] transition-transform duration-300' : '')} ${photo.isLocked && isEditMode ? 'opacity-90' : ''}`}
+            className={`group ${isEditMode && !photo.isLocked && !isDrawingMode ? 'cursor-move' : ''} ${!isEditMode && isLinkable ? 'cursor-pointer hover:scale-105 active:scale-95 transition-all duration-200' : (!isEditMode && (!photo.type || photo.type === 'image') ? 'cursor-pointer hover:scale-[1.02] transition-transform duration-300' : '')} ${lockedClass}`}
             onPointerDown={(e) => {
-                if (photo.isLocked || isDrawingMode) return;
+                // Previene interacción extra si las reglas de CSS fallaran
+                if (photo.isLocked || isDrawingMode || interactionEvents === 'none') return;
+
                 if (isEditMode) handlePointerDown('drag', e);
                 else {
                     if (isLinkable) window.open(photo.url, '_blank', 'noopener,noreferrer');
@@ -172,6 +188,7 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                 </div>
             )}
 
+            {/* FOTOGRAFÍA */}
             {(!photo.type || photo.type === 'image') && (
                 <div style={{ backgroundColor: frameColor }} className={`p-3 pb-12 rounded-sm border relative transition-all duration-300 ${isEditMode && interaction === 'drag' ? 'border-amber-300 shadow-2xl scale-105' : 'border-stone-200 shadow-xl group-hover:shadow-2xl'}`}>
                     {tapeStyle === 'top' && <div className="absolute -top-3 left-1/2 -translate-x-1/2 w-16 h-6 bg-white/40 backdrop-blur-md border border-white/40 shadow-sm rounded-sm transform rotate-2 z-10 opacity-80 print:opacity-100" style={{ backgroundImage: tapeGradient }}></div>}
@@ -194,7 +211,6 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                 </div>
             )}
 
-            {/* NUEVO: PEGATINA PNG PERSONALIZADA CON ANIMACIÓN */}
             {photo.type === 'custom_sticker' && (
                 <div className="relative w-full h-full flex items-center justify-center pointer-events-none">
                     <img src={photo.src} alt="Sticker" style={customAnimStyle} className="w-full h-auto drop-shadow-lg object-contain pointer-events-none select-none" draggable="false" />
@@ -202,13 +218,14 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
             )}
 
             {photo.type === 'drawing' && (
-                <div className="relative">
+                <div className="relative pointer-events-none">
                     <img src={photo.src} alt="Dibujo Libre" className="w-full h-auto drop-shadow-md pointer-events-none select-none" draggable="false" />
                 </div>
             )}
 
+            {/* LAZO Y LAZO GUÍA */}
             {(photo.type === 'lazo' || photo.type === 'lazo_guia') && (
-                <div className="relative w-full h-full overflow-visible">
+                <div className="relative w-full h-full overflow-visible pointer-events-none">
                     {isEditMode && photo.type === 'lazo_guia' && (
                         <div className="absolute -top-6 -left-6 bg-blue-600 text-white font-black text-lg w-8 h-8 rounded-full flex items-center justify-center shadow-lg border-2 border-white z-50 print:hidden pointer-events-none">
                             {photo.tourOrder || 1}
@@ -232,6 +249,7 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                             markerStart={photo.texture === 'bidireccional' ? `url(#arrow-head-${photo.id})` : ''}
                             className="pointer-events-none"
                         />
+                        {/* Habilitamos los clics SOLO en los puntitos para poder editarlos */}
                         {isEditMode && isSelected && !photo.isLocked && !isDrawingMode && localPoints.map((p, index) => (
                             <g key={index} className="pointer-events-auto">
                                 <circle

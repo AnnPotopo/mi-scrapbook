@@ -35,7 +35,6 @@ const getLazoPath = (pts, isSmooth) => {
     return d;
 };
 
-// ESTILOS GLOBALES PARA ANIMACIONES CUSTOM
 const CustomAnimations = () => (
     <style>
         {`
@@ -75,6 +74,9 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
     const [stickerIsBold, setStickerIsBold] = useState(false);
     const [stickerIsItalic, setStickerIsItalic] = useState(false);
 
+    // NUEVO: Estado para la Rotación en el Modal
+    const [stickerRotation, setStickerRotation] = useState(0);
+
     const [photoDescText, setPhotoDescText] = useState("");
     const [photoTapeStyle, setPhotoTapeStyle] = useState("top");
 
@@ -95,8 +97,6 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
 
     const [openFolders, setOpenFolders] = useState({});
     const [assignFolderId, setAssignFolderId] = useState(null);
-
-    // NUEVO: Estado para Drag & Drop
     const [dragOverFolderId, setDragOverFolderId] = useState(null);
 
     const [tourStatus, setTourStatus] = useState('idle');
@@ -339,7 +339,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
 
                     await setDoc(doc(collection(db, 'artifacts', appId, 'photos')), {
                         albumId: activeAlbum.id, type: 'custom_sticker', src: base64Data, x: startX + (i * 20), y: startY + (i * 20),
-                        width: 150, rotation: Math.floor(Math.random() * 20) - 10, zIndex: maxZ + i + 1,
+                        width: 150, rotation: 0, zIndex: maxZ + i + 1,
                         isLocked: false, folderId: null, animType: 'none', animDuration: 3, animDirection: 'alternate'
                     });
                 }
@@ -406,9 +406,19 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
         setLazoPoints([]);
     };
 
+    // FUNCIONES AUXILIARES PARA MANEJAR LA ROTACIÓN
+    const handleRotateAdd = (deg) => {
+        setStickerRotation(prev => {
+            let next = prev + deg;
+            if (next > 180) next -= 360;
+            if (next < -180) next += 360;
+            return next;
+        });
+    };
+
     const handleSaveSticker = async (type) => {
         if (type === 'image') {
-            await updatePhoto(editingStickerId, { description: photoDescText, frameColor: stickerBgColor, tapeStyle: photoTapeStyle });
+            await updatePhoto(editingStickerId, { description: photoDescText, frameColor: stickerBgColor, tapeStyle: photoTapeStyle, rotation: stickerRotation });
             setStickerModalType(null); setEditingStickerId(null); return;
         }
         if (type === 'folder') {
@@ -416,11 +426,11 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
             setStickerModalType(null); setEditingStickerId(null); return;
         }
         if (type === 'custom_sticker') {
-            await updatePhoto(editingStickerId, { animType, animDuration, animDirection });
+            await updatePhoto(editingStickerId, { animType, animDuration, animDirection, rotation: stickerRotation });
             setStickerModalType(null); setEditingStickerId(null); return;
         }
         if (type === 'lazo' || type === 'lazo_guia') {
-            const payload = { color: stickerBgColor, texture: lazoTexture, thickness: lazoThickness, isSmooth: lazoIsSmooth };
+            const payload = { color: stickerBgColor, texture: lazoTexture, thickness: lazoThickness, isSmooth: lazoIsSmooth, rotation: stickerRotation };
             if (type === 'lazo_guia') {
                 payload.tourOrder = tourOrder;
                 payload.tourZoom = tourZoomLevel;
@@ -433,14 +443,14 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
         }
         if (type === 'drawing') {
             const base64Data = drawingCanvasRef.current.toDataURL('image/png');
-            const drawingData = { type: 'drawing', src: base64Data, color: stickerBgColor, thickness: lazoThickness };
+            const drawingData = { type: 'drawing', src: base64Data, color: stickerBgColor, thickness: lazoThickness, rotation: stickerRotation };
             try {
                 if (editingStickerId) await updatePhoto(editingStickerId, drawingData);
                 else {
                     const maxZ = activePhotos.length > 0 ? Math.max(...activePhotos.map(p => p.zIndex || 0)) : 0;
                     const { startX, startY } = getCenterCoords(400);
                     const newStickerRef = doc(collection(db, 'artifacts', appId, 'photos'));
-                    await setDoc(newStickerRef, { albumId: activeAlbum.id, ...drawingData, x: startX, y: startY, width: 400, rotation: Math.floor(Math.random() * 20) - 10, zIndex: maxZ + 1, isLocked: false, folderId: null });
+                    await setDoc(newStickerRef, { albumId: activeAlbum.id, ...drawingData, x: startX, y: startY, width: 400, zIndex: maxZ + 1, isLocked: false, folderId: null });
                     setSelectedItemId(newStickerRef.id);
                 }
                 setStickerModalType(null); setEditingStickerId(null); setShowStickerMenu(false);
@@ -460,7 +470,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
         const stickerData = {
             type, content: contentToSave, url: stickerInputUrl,
             bgColor: stickerBgColor, borderColor: stickerBorderColor, textColor: stickerTextColor,
-            isBold: stickerIsBold, isItalic: stickerIsItalic,
+            isBold: stickerIsBold, isItalic: stickerIsItalic, rotation: stickerRotation,
             ...(type === 'date' ? { rawDate: stickerDate } : {}),
             ...(type === 'animated' ? { animationStyle: animStyle } : {})
         };
@@ -471,7 +481,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                 const maxZ = activePhotos.length > 0 ? Math.max(...activePhotos.map(p => p.zIndex || 0)) : 0;
                 const { startX, startY } = getCenterCoords(width);
                 const newStickerRef = doc(collection(db, 'artifacts', appId, 'photos'));
-                await setDoc(newStickerRef, { albumId: activeAlbum.id, ...stickerData, x: startX, y: startY, width, rotation: Math.floor(Math.random() * 20) - 10, zIndex: maxZ + 1, isLocked: false, folderId: null });
+                await setDoc(newStickerRef, { albumId: activeAlbum.id, ...stickerData, x: startX, y: startY, width, zIndex: maxZ + 1, isLocked: false, folderId: null });
                 setSelectedItemId(newStickerRef.id);
             }
             setStickerModalType(null); setEditingStickerId(null); setShowStickerMenu(false);
@@ -510,6 +520,8 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
 
         if (photoToEdit) {
             setEditingStickerId(photoToEdit.id);
+            setStickerRotation(photoToEdit.rotation || 0);
+
             if (type === 'image' || !type) {
                 setPhotoDescText(photoToEdit.description || "");
                 setStickerBgColor(photoToEdit.frameColor || "#faf9f5");
@@ -552,6 +564,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
             }
         } else {
             setEditingStickerId(null);
+            setStickerRotation(Math.floor(Math.random() * 20) - 10);
             setStickerInputText(""); setStickerInputUrl("");
             setStickerBgColor(type === 'postit' ? '#fef08a' : (type === 'link' || type === 'music' || type === 'counter') ? '#3b82f6' : type === 'drawing' ? '#1f2937' : '#ffffff');
             setStickerBorderColor(type === 'location' ? '#f43f5e' : (type === 'link' || type === 'music' || type === 'counter') ? '#ffffff' : '#e5e7eb');
@@ -565,6 +578,23 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
         }
         setShowStickerMenu(false);
     };
+
+    // NUEVO: PANEL DE CONTROLES DE ROTACIÓN
+    const renderRotationControls = () => (
+        <div className="bg-stone-50 p-4 rounded-xl border border-stone-200 mb-6">
+            <div className="flex items-center justify-between mb-3">
+                <span className="text-xs font-bold text-stone-500 uppercase tracking-wider">Rotación</span>
+                <span className="text-xs font-bold text-stone-700">{Math.round(stickerRotation)}°</span>
+            </div>
+            <input type="range" min="-180" max="180" value={stickerRotation} onChange={(e) => setStickerRotation(parseInt(e.target.value))} className="w-full accent-blue-600 cursor-pointer mb-4" />
+            <div className="grid grid-cols-3 gap-2">
+                <button onClick={() => handleRotateAdd(-45)} className="py-1.5 text-xs rounded-lg font-bold border transition-all bg-white border-stone-200 text-stone-700 hover:bg-stone-100 active:scale-95">-45°</button>
+                <button onClick={() => setStickerRotation(0)} className="py-1.5 text-xs rounded-lg font-bold border transition-all bg-stone-800 border-stone-800 text-white hover:bg-stone-700 active:scale-95">Recto (0°)</button>
+                <button onClick={() => handleRotateAdd(45)} className="py-1.5 text-xs rounded-lg font-bold border transition-all bg-white border-stone-200 text-stone-700 hover:bg-stone-100 active:scale-95">+45°</button>
+            </div>
+            <p className="text-[10px] text-stone-400 text-center mt-2 italic leading-tight">Tip: Mantén presionada la tecla Shift mientras rotas con el ratón para fijar a 45°.</p>
+        </div>
+    );
 
     const renderStyleControls = () => (
         <div className="bg-stone-50 p-4 rounded-xl border border-stone-200 mb-6">
@@ -584,7 +614,6 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
     const folders = activePhotos.filter(p => p.type === 'folder').sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
     const items = activePhotos.filter(p => p.type !== 'folder').sort((a, b) => (b.zIndex || 0) - (a.zIndex || 0));
 
-    // RENDERIZADO DE ITEM EN EL MENÚ DE CAPAS CON DRAG AND DROP
     const renderLayerItem = (p) => {
         const isEditable = !p.type || ['image', 'postit', 'date', 'link', 'music', 'counter', 'location', 'lazo', 'lazo_guia', 'drawing', 'animated', 'custom_sticker'].includes(p.type);
         return (
@@ -609,7 +638,6 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                     </div>
                 </div>
 
-                {/* MENÚ DE CARPETAS INLINE (Ya no se corta) */}
                 {assignFolderId === p.id && (
                     <div className="mt-1 bg-white border border-stone-200 p-1.5 flex flex-col gap-0.5 rounded-xl shadow-sm z-10 w-full animate-in fade-in slide-in-from-top-2">
                         <button onClick={(e) => { e.stopPropagation(); updatePhoto(p.id, { folderId: null }); setAssignFolderId(null); }} className="text-[10px] font-bold text-left px-2 py-1.5 hover:bg-stone-100 rounded-lg text-stone-500 w-full">↗️ Sacar de la carpeta</button>
@@ -678,11 +706,14 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                                         </div>
                                         <div className="px-1 pb-2">
                                             <label className="flex items-center justify-center gap-2 w-full p-2 bg-emerald-100 text-emerald-800 rounded-xl text-xs font-bold hover:bg-emerald-200 cursor-pointer transition-all shadow-sm">
-                                                {isUploading ? <Loader2 size={16} className="animate-spin" /> : <UploadCloud size={16} />} Subir PNG (Animable)
+                                                {isUploading ? <Loader2 size={16} className="animate-spin" /> : <UploadCloud size={16} />}
+                                                Subir PNG (Animable)
                                                 <input type="file" multiple accept="image/png, image/gif, image/webp" className="hidden" onChange={handlePngUpload} disabled={isUploading} />
                                             </label>
                                         </div>
+
                                         <div className="border-t border-stone-100 my-1"></div>
+
                                         <div className="flex flex-col gap-4 px-3 py-3 max-h-80 overflow-y-auto">
                                             <div><p className="text-[10px] font-bold text-blue-500 uppercase tracking-wider mb-2">Animaciones (Solo en Recorrido)</p><div className="flex flex-wrap gap-2">{['✨', '💖', '🔥', '🦋', '🫧', '🎉', '🕊️', '☄️'].map(e => <button key={e} onClick={() => handleAddEmoji(e, true)} className="text-xl hover:scale-125 active:scale-95 transition-transform" title="Añadir animación">{e}</button>)}</div></div>
                                             <div><p className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-2">Pines y Papelería</p><div className="flex flex-wrap gap-2">{['📌', '📍', '📎', '🖇️', '🏷️', '🩹', '📏', '✂️', '🗑️', '📋'].map(e => <button key={e} onClick={() => handleAddEmoji(e)} className="text-xl hover:scale-125 active:scale-95 transition-transform" title="Añadir al lienzo">{e}</button>)}</div></div>
@@ -722,7 +753,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                 </div>
             </div>
 
-            {/* CONTROLES DEL TOUR Y TIMELINE (VISTA GUIADA) */}
+            {/* CONTROLES DEL TOUR Y TIMELINE */}
             {!isEditMode && hasGuideLazos && (
                 <div className="absolute bottom-8 left-8 right-8 z-[9000] flex flex-col items-start gap-3 pointer-events-none print:hidden max-w-3xl">
                     {tourStatus !== 'idle' && (
@@ -739,6 +770,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                             </div>
                         </div>
                     )}
+
                     <div className="flex bg-white/90 backdrop-blur-md rounded-2xl shadow-xl border border-blue-200 overflow-hidden pointer-events-auto animate-in slide-in-from-left-8">
                         <div className="bg-blue-600 text-white px-4 py-3 flex items-center justify-center font-bold text-sm tracking-wider uppercase">Tour</div>
                         <button onClick={playTour} disabled={tourStatus === 'playing' || tourStatus === 'message'} className="p-3 hover:bg-blue-50 text-blue-600 disabled:opacity-30 disabled:hover:bg-transparent transition-colors" title="Reproducir"><Play size={20} fill="currentColor" /></button>
@@ -812,7 +844,6 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                             </div>
                         ))}
 
-                        {/* ZONA DE SOLTADO PARA SACAR DE CARPETAS */}
                         <div
                             className={`pt-2 flex flex-col gap-1 pb-4 min-h-[60px] rounded-xl transition-all border-2 ${dragOverFolderId === 'root' ? 'border-dashed border-stone-400 bg-stone-100/50' : 'border-transparent'}`}
                             onDragOver={(e) => { e.preventDefault(); setDragOverFolderId('root'); }}
@@ -841,7 +872,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                     style={{ transform: `scale(${zoom})` }}
                     onPointerDown={() => isEditMode && !drawingLazoType && setSelectedItemId(null)}
                 >
-                    {/* MODO FANTASMA AL DIBUJAR LAZO (Z-INDEX 8000 + CURSOR CROSSHAIR) */}
+                    {/* MODO FANTASMA AL DIBUJAR LAZO */}
                     {drawingLazoType && (
                         <div className="absolute inset-0 z-[8000] cursor-crosshair" onPointerDown={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setLazoPoints(prev => [...prev, { x: (e.clientX - rect.left) / zoom, y: (e.clientY - rect.top) / zoom }]); }}>
                             <svg className="w-full h-full pointer-events-none drop-shadow-md">
@@ -919,6 +950,8 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                     <div className="bg-white rounded-3xl p-8 w-full max-w-sm shadow-2xl">
                         <h2 className="text-2xl font-bold mb-6 flex items-center gap-2 text-stone-800"><ImagePlus /> Pegatina Animada</h2>
 
+                        {renderRotationControls()}
+
                         <div className="bg-stone-50 p-4 rounded-xl border border-stone-200 mb-6">
                             <p className="text-xs font-bold text-stone-500 uppercase tracking-wider mb-3">Tipo de Animación</p>
                             <div className="grid grid-cols-2 gap-2 mb-4">
@@ -945,7 +978,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                             </div>
                         </div>
 
-                        <div className="flex justify-end gap-3"><button onClick={() => { setStickerModalType(null); setEditingStickerId(null); }} className="px-5 py-2 font-medium hover:bg-stone-100 rounded-full hover:scale-105 active:scale-95 transition-all text-stone-600">Cancelar</button><button onClick={() => handleSaveSticker('custom_sticker')} className="px-6 py-2 bg-stone-800 text-white rounded-full font-bold shadow-md hover:bg-stone-700 hover:scale-105 active:scale-95 transition-all">Guardar Animación</button></div>
+                        <div className="flex justify-end gap-3"><button onClick={() => { setStickerModalType(null); setEditingStickerId(null); }} className="px-5 py-2 font-medium hover:bg-stone-100 rounded-full hover:scale-105 active:scale-95 transition-all text-stone-600">Cancelar</button><button onClick={() => handleSaveSticker('custom_sticker')} className="px-6 py-2 bg-stone-800 text-white rounded-full font-bold shadow-md hover:bg-stone-700 hover:scale-105 active:scale-95 transition-all">Guardar Cambios</button></div>
                     </div>
                 </div>
             )}
@@ -955,6 +988,8 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                 <div className="fixed inset-0 bg-stone-900/60 z-[99999] flex items-center justify-center p-4 backdrop-blur-sm print:hidden">
                     <div className="bg-white rounded-3xl p-8 w-full max-w-md shadow-2xl">
                         <h2 className="text-2xl font-bold mb-4 flex items-center gap-2"><Brush /> {editingStickerId ? 'Editar Dibujo' : 'Nuevo Dibujo Libre'}</h2>
+
+                        {renderRotationControls()}
 
                         <div className="bg-stone-50 p-4 rounded-xl border border-stone-200 mb-4">
                             <label className="flex items-center gap-3 text-sm font-medium mb-4 cursor-pointer hover:scale-[1.02] transition-transform">
@@ -988,6 +1023,9 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                 <div className="fixed inset-0 bg-stone-900/60 z-[99999] flex items-center justify-center p-4 backdrop-blur-sm print:hidden">
                     <div className="bg-white rounded-3xl p-8 w-full max-w-md shadow-2xl">
                         <h2 className="text-2xl font-bold mb-6 flex items-center gap-2 text-stone-800"><ImagePlus /> Detalles de la Foto</h2>
+
+                        {renderRotationControls()}
+
                         <div className="bg-stone-50 p-4 rounded-xl border border-stone-200 mb-6">
                             <p className="text-xs font-bold text-stone-500 uppercase tracking-wider mb-4">Estilo Visual</p>
                             <label className="flex items-center gap-3 text-sm font-medium mb-4 cursor-pointer hover:scale-[1.02] transition-transform"><input type="color" value={stickerBgColor} onChange={e => setStickerBgColor(e.target.value)} className="w-10 h-10 p-0 border-2 border-stone-300 rounded cursor-pointer" /> Color del Marco</label>
@@ -1012,6 +1050,8 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                         <h2 className="text-2xl font-bold mb-6 flex items-center gap-2 text-stone-800">
                             {stickerModalType === 'lazo_guia' ? <><Navigation /> Editar Lazo Guía (Tour)</> : <><PenTool /> Editar Lazo</>}
                         </h2>
+
+                        {renderRotationControls()}
 
                         {stickerModalType === 'lazo_guia' && (
                             <div className="bg-blue-50 p-4 rounded-xl border border-blue-200 mb-6">
@@ -1064,6 +1104,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                             {editingStickerId ? 'Editar Elemento' : 'Nuevo Elemento'}
                         </h2>
 
+                        {renderRotationControls()}
                         {stickerModalType !== 'animated' && renderStyleControls()}
 
                         {stickerModalType === 'postit' && <textarea value={stickerInputText} onChange={(e) => setStickerInputText(e.target.value)} placeholder="Escribe tu nota..." className="w-full h-32 p-4 rounded-xl resize-none font-serif text-lg mb-6 outline-none focus:ring-2 focus:ring-stone-400 border border-stone-200 shadow-inner" style={{ backgroundColor: stickerBgColor, color: stickerTextColor, fontWeight: stickerIsBold ? 'bold' : 'normal', fontStyle: stickerIsItalic ? 'italic' : 'normal' }} autoFocus />}
