@@ -2,8 +2,8 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { collection, doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { db, appId } from '../firebase';
 import { compressImage } from '../utils';
-import InteractablePhoto, { getLazoPath } from './InteractablePhoto';
-import { ArrowLeft, Layers, SmilePlus, ImagePlus, Check, Edit3, X, StickyNote, Calendar, Link as LinkIcon, Loader2, Trash2, ChevronUp, MessageSquareText, MapPin, Edit2, Palette, PenTool, Brush, Music, Hash, Printer, ZoomIn, ZoomOut } from 'lucide-react';
+import InteractablePhoto from './InteractablePhoto';
+import { ArrowLeft, Layers, SmilePlus, ImagePlus, Check, Edit3, X, StickyNote, Calendar, Link as LinkIcon, Loader2, Trash2, ChevronUp, MessageSquareText, MapPin, Edit2, Palette, PenTool, Brush, Music, Hash, Printer, ZoomIn, ZoomOut, Play, Pause, Square, Navigation, Lock, Unlock, Folder, FolderPlus } from 'lucide-react';
 
 const CANVAS_BACKGROUNDS = {
     dots: { name: 'Puntos Clásicos', className: 'bg-[#f7f5f0] bg-[radial-gradient(#d1cfc7_2px,transparent_2px)] [background-size:32px_32px]' },
@@ -16,11 +16,29 @@ const CANVAS_BACKGROUNDS = {
     dark: { name: 'Noche', className: 'bg-stone-900' }
 };
 
+const getLazoPath = (pts, isSmooth) => {
+    if (!pts || pts.length === 0) return "";
+    if (pts.length === 1) return `M ${pts[0].x} ${pts[0].y}`;
+    if (!isSmooth || pts.length < 3) return `M ${pts.map(p => `${p.x},${p.y}`).join(' L ')}`;
+    let d = `M ${pts[0].x},${pts[0].y}`;
+    for (let i = 0; i < pts.length - 1; i++) {
+        const p0 = i > 0 ? pts[i - 1] : pts[0];
+        const p1 = pts[i];
+        const p2 = pts[i + 1];
+        const p3 = i !== pts.length - 2 ? pts[i + 2] : p2;
+        const cp1x = p1.x + (p2.x - p0.x) * 0.2;
+        const cp1y = p1.y + (p2.y - p0.y) * 0.2;
+        const cp2x = p2.x - (p3.x - p1.x) * 0.2;
+        const cp2y = p2.y - (p3.y - p1.y) * 0.2;
+        d += ` C ${cp1x},${cp1y} ${cp2x},${cp2y} ${p2.x},${p2.y}`;
+    }
+    return d;
+};
+
 export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCurrentView, setActiveAlbumId, setDbError }) {
     const [isEditMode, setIsEditMode] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
 
-    // Novedad: Control de Zoom
     const [zoom, setZoom] = useState(1);
     const scrollContainerRef = useRef(null);
 
@@ -28,7 +46,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
     const [showStickerMenu, setShowStickerMenu] = useState(false);
     const [showBgMenu, setShowBgMenu] = useState(false);
 
-    const [isDrawingLazo, setIsDrawingLazo] = useState(false);
+    const [drawingLazoType, setDrawingLazoType] = useState(null);
     const [lazoPoints, setLazoPoints] = useState([]);
 
     const [selectedItemId, setSelectedItemId] = useState(null);
@@ -51,6 +69,23 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
     const [lazoThickness, setLazoThickness] = useState(3);
     const [lazoIsSmooth, setLazoIsSmooth] = useState(true);
 
+    const [tourOrder, setTourOrder] = useState(1);
+    const [tourZoomLevel, setTourZoomLevel] = useState(1);
+    const [tourSpeed, setTourSpeed] = useState(250);
+    const [tourMessage, setTourMessage] = useState("");
+    const [tourVisible, setTourVisible] = useState(false);
+    const [animStyle, setAnimStyle] = useState("animate-bounce");
+
+    const [openFolders, setOpenFolders] = useState({});
+    const [assignFolderId, setAssignFolderId] = useState(null);
+
+    const [tourStatus, setTourStatus] = useState('idle');
+    const [tourCurrentMessage, setTourCurrentMessage] = useState("");
+    const tourEngineRef = useRef({ active: false, lazos: [], lIdx: 0, pIdx: 0, progress: 0, lastTime: 0 });
+
+    const progressBarRef = useRef(null);
+    const progressTextRef = useRef(null);
+
     const [deletePhotoId, setDeletePhotoId] = useState(null);
     const [selectedPhotoForDesc, setSelectedPhotoForDesc] = useState(null);
 
@@ -61,9 +96,113 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
     const bgClass = CANVAS_BACKGROUNDS[activeBgId]?.className || CANVAS_BACKGROUNDS.dots.className;
     const btnClass = "hover:scale-105 active:scale-95 transition-all duration-200 cursor-pointer shadow-sm font-medium flex items-center gap-2 px-5 py-3.5 rounded-2xl";
 
-    // Función para Imprimir / Exportar a PDF
-    const handlePrint = () => {
-        window.print();
+    const handlePrint = () => window.print();
+
+    const tourLazos = activePhotos.filter(p => p.type === 'lazo_guia').sort((a, b) => (a.tourOrder || 0) - (b.tourOrder || 0));
+    const hasGuideLazos = tourLazos.length > 0;
+
+    const playTour = () => {
+        if (tourStatus === 'idle') {
+            if (tourLazos.length === 0) return;
+            tourEngineRef.current = { active: true, lazos: tourLazos, lIdx: 0, pIdx: 0, progress: 0, lastTime: performance.now() };
+            setZoom(tourLazos[0].tourZoom || 1);
+        } else {
+            tourEngineRef.current.active = true;
+            tourEngineRef.current.lastTime = performance.now();
+        }
+        setTourStatus('playing');
+        requestAnimationFrame(animateTourLoop);
+    };
+
+    const pauseTour = () => {
+        tourEngineRef.current.active = false;
+        setTourStatus('paused');
+    };
+
+    const stopTour = () => {
+        tourEngineRef.current.active = false;
+        setTourStatus('idle');
+        setTourCurrentMessage("");
+        if (progressBarRef.current) progressBarRef.current.style.width = '0%';
+        if (progressTextRef.current) progressTextRef.current.innerText = '0%';
+    };
+
+    const continueTourAfterMessage = () => {
+        setTourCurrentMessage("");
+        tourEngineRef.current.lIdx++;
+        tourEngineRef.current.pIdx = 0;
+        tourEngineRef.current.progress = 0;
+
+        if (tourEngineRef.current.lIdx >= tourEngineRef.current.lazos.length) {
+            stopTour();
+        } else {
+            const nextLazo = tourEngineRef.current.lazos[tourEngineRef.current.lIdx];
+            setZoom(nextLazo.tourZoom || 1);
+            tourEngineRef.current.active = true;
+            tourEngineRef.current.lastTime = performance.now();
+            setTourStatus('playing');
+            requestAnimationFrame(animateTourLoop);
+        }
+    };
+
+    const animateTourLoop = (time) => {
+        if (!tourEngineRef.current.active) return;
+        const state = tourEngineRef.current;
+        const dt = time - state.lastTime;
+        state.lastTime = time;
+
+        const lazo = state.lazos[state.lIdx];
+        const pts = lazo.points;
+        const p1 = pts[state.pIdx];
+        const p2 = pts[state.pIdx + 1];
+
+        if (progressBarRef.current && progressTextRef.current) {
+            const overallProgress = ((state.lIdx + state.progress) / state.lazos.length) * 100;
+            progressBarRef.current.style.width = `${Math.min(overallProgress, 100)}%`;
+            progressTextRef.current.innerText = `${Math.round(Math.min(overallProgress, 100))}%`;
+        }
+
+        if (!p2) {
+            tourEngineRef.current.active = false;
+            if (lazo.tourMessage) {
+                setTourStatus('message');
+                setTourCurrentMessage(lazo.tourMessage);
+            } else {
+                continueTourAfterMessage();
+            }
+            return;
+        }
+
+        const speed = lazo.tourSpeed || 250;
+        const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+        const timeToTravel = (dist / speed) * 1000;
+
+        if (timeToTravel > 0) state.progress += dt / timeToTravel;
+        else state.progress = 1;
+
+        if (state.progress >= 1) {
+            state.pIdx++;
+            state.progress = 0;
+            requestAnimationFrame(animateTourLoop);
+            return;
+        }
+
+        const currX = p1.x + (p2.x - p1.x) * state.progress;
+        const currY = p1.y + (p2.y - p1.y) * state.progress;
+        const absX = lazo.x + currX;
+        const absY = lazo.y + currY;
+
+        const container = scrollContainerRef.current;
+        if (container) {
+            const currentZoom = lazo.tourZoom || 1;
+            container.scrollTo({
+                left: (absX * currentZoom) - container.clientWidth / 2,
+                top: (absY * currentZoom) - container.clientHeight / 2,
+                behavior: 'instant'
+            });
+        }
+
+        if (tourEngineRef.current.active) requestAnimationFrame(animateTourLoop);
     };
 
     useEffect(() => {
@@ -112,7 +251,6 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
         ctx.clearRect(0, 0, canvas.width, canvas.height);
     };
 
-    // Calcula el centro de la pantalla actual (teniendo en cuenta el scroll y el zoom) para los nuevos elementos
     const getCenterCoords = (itemWidth = 300) => {
         const container = scrollContainerRef.current;
         let startX = 50;
@@ -139,7 +277,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                     await setDoc(doc(collection(db, 'artifacts', appId, 'photos')), {
                         albumId: activeAlbum.id, type: 'image', src: base64Data, x: startX + (i * 30), y: startY + (i * 30),
                         width: 300, rotation: Math.floor(Math.random() * 20) - 10, zIndex: maxZ + i + 1,
-                        description: "", frameColor: "#faf9f5", tapeStyle: "top"
+                        description: "", frameColor: "#faf9f5", tapeStyle: "top", isLocked: false, folderId: null
                     });
                 }
             }
@@ -157,9 +295,18 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
         catch (error) { if (error.code === 'permission-denied') setDbError('permissions'); }
     };
 
+    const handleCreateFolder = async () => {
+        try {
+            const newFolderRef = doc(collection(db, 'artifacts', appId, 'photos'));
+            await setDoc(newFolderRef, {
+                albumId: activeAlbum.id, type: 'folder', content: 'Nueva Carpeta', color: '#3b82f6', createdAt: Date.now()
+            });
+        } catch (error) { if (error.code === 'permission-denied') setDbError('permissions'); }
+    };
+
     const finishDrawingLazo = async (e) => {
         if (e) e.stopPropagation();
-        if (lazoPoints.length < 2) { setIsDrawingLazo(false); setLazoPoints([]); return; }
+        if (lazoPoints.length < 2) { setDrawingLazoType(null); setLazoPoints([]); return; }
 
         const minX = Math.min(...lazoPoints.map(p => p.x));
         const maxX = Math.max(...lazoPoints.map(p => p.x));
@@ -174,16 +321,25 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
 
         try {
             const newLazoRef = doc(collection(db, 'artifacts', appId, 'photos'));
-            await setDoc(newLazoRef, {
-                albumId: activeAlbum.id, type: 'lazo',
+            const payload = {
+                albumId: activeAlbum.id, type: drawingLazoType,
                 points: normalizedPoints, x: minX, y: minY, width, height,
                 baseWidth: width, baseHeight: height, rotation: 0,
-                zIndex: maxZ + 1, color: '#1f2937', texture: 'hilo', thickness: 3, isSmooth: true
-            });
+                zIndex: maxZ + 1, color: drawingLazoType === 'lazo_guia' ? '#3b82f6' : '#1f2937',
+                texture: drawingLazoType === 'lazo_guia' ? 'flecha' : 'hilo', thickness: 3, isSmooth: true, isLocked: false, folderId: null
+            };
+            if (drawingLazoType === 'lazo_guia') {
+                payload.tourOrder = activePhotos.filter(p => p.type === 'lazo_guia').length + 1;
+                payload.tourZoom = 1;
+                payload.tourSpeed = 250;
+                payload.tourMessage = "";
+                payload.tourVisible = false;
+            }
+            await setDoc(newLazoRef, payload);
             setSelectedItemId(newLazoRef.id);
         } catch (err) { if (err.code === 'permission-denied') setDbError('permissions'); }
 
-        setIsDrawingLazo(false);
+        setDrawingLazoType(null);
         setLazoPoints([]);
     };
 
@@ -192,21 +348,32 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
             await updatePhoto(editingStickerId, { description: photoDescText, frameColor: stickerBgColor, tapeStyle: photoTapeStyle });
             setStickerModalType(null); setEditingStickerId(null); return;
         }
-        if (type === 'lazo') {
-            await updatePhoto(editingStickerId, { color: stickerBgColor, texture: lazoTexture, thickness: lazoThickness, isSmooth: lazoIsSmooth });
+        if (type === 'folder') {
+            await updatePhoto(editingStickerId, { content: stickerInputText, color: stickerBgColor });
+            setStickerModalType(null); setEditingStickerId(null); return;
+        }
+        if (type === 'lazo' || type === 'lazo_guia') {
+            const payload = { color: stickerBgColor, texture: lazoTexture, thickness: lazoThickness, isSmooth: lazoIsSmooth };
+            if (type === 'lazo_guia') {
+                payload.tourOrder = tourOrder;
+                payload.tourZoom = tourZoomLevel;
+                payload.tourSpeed = tourSpeed;
+                payload.tourMessage = tourMessage;
+                payload.tourVisible = tourVisible;
+            }
+            await updatePhoto(editingStickerId, payload);
             setStickerModalType(null); setEditingStickerId(null); return;
         }
         if (type === 'drawing') {
             const base64Data = drawingCanvasRef.current.toDataURL('image/png');
             const drawingData = { type: 'drawing', src: base64Data, color: stickerBgColor, thickness: lazoThickness };
             try {
-                if (editingStickerId) {
-                    await updatePhoto(editingStickerId, drawingData);
-                } else {
+                if (editingStickerId) await updatePhoto(editingStickerId, drawingData);
+                else {
                     const maxZ = activePhotos.length > 0 ? Math.max(...activePhotos.map(p => p.zIndex || 0)) : 0;
                     const { startX, startY } = getCenterCoords(400);
                     const newStickerRef = doc(collection(db, 'artifacts', appId, 'photos'));
-                    await setDoc(newStickerRef, { albumId: activeAlbum.id, ...drawingData, x: startX, y: startY, width: 400, rotation: Math.floor(Math.random() * 20) - 10, zIndex: maxZ + 1 });
+                    await setDoc(newStickerRef, { albumId: activeAlbum.id, ...drawingData, x: startX, y: startY, width: 400, rotation: Math.floor(Math.random() * 20) - 10, zIndex: maxZ + 1, isLocked: false, folderId: null });
                     setSelectedItemId(newStickerRef.id);
                 }
                 setStickerModalType(null); setEditingStickerId(null); setShowStickerMenu(false);
@@ -226,7 +393,9 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
         const stickerData = {
             type, content: contentToSave, url: stickerInputUrl,
             bgColor: stickerBgColor, borderColor: stickerBorderColor, textColor: stickerTextColor,
-            isBold: stickerIsBold, isItalic: stickerIsItalic, ...(type === 'date' ? { rawDate: stickerDate } : {})
+            isBold: stickerIsBold, isItalic: stickerIsItalic,
+            ...(type === 'date' ? { rawDate: stickerDate } : {}),
+            ...(type === 'animated' ? { animationStyle: animStyle } : {})
         };
 
         try {
@@ -234,21 +403,24 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
             else {
                 const maxZ = activePhotos.length > 0 ? Math.max(...activePhotos.map(p => p.zIndex || 0)) : 0;
                 const { startX, startY } = getCenterCoords(width);
-
                 const newStickerRef = doc(collection(db, 'artifacts', appId, 'photos'));
-                await setDoc(newStickerRef, { albumId: activeAlbum.id, ...stickerData, x: startX, y: startY, width, rotation: Math.floor(Math.random() * 20) - 10, zIndex: maxZ + 1 });
+                await setDoc(newStickerRef, { albumId: activeAlbum.id, ...stickerData, x: startX, y: startY, width, rotation: Math.floor(Math.random() * 20) - 10, zIndex: maxZ + 1, isLocked: false, folderId: null });
                 setSelectedItemId(newStickerRef.id);
             }
             setStickerModalType(null); setEditingStickerId(null); setShowStickerMenu(false);
         } catch (error) { if (error.code === 'permission-denied') setDbError('permissions'); }
     };
 
-    const handleAddEmoji = async (emoji) => {
+    const handleAddEmoji = async (emoji, isAnim = false) => {
         const maxZ = activePhotos.length > 0 ? Math.max(...activePhotos.map(p => p.zIndex || 0)) : 0;
         const { startX, startY } = getCenterCoords(120);
         try {
             const newEmojiRef = doc(collection(db, 'artifacts', appId, 'photos'));
-            await setDoc(newEmojiRef, { albumId: activeAlbum.id, type: 'emoji', content: emoji, x: startX, y: startY, width: 120, rotation: Math.floor(Math.random() * 20) - 10, zIndex: maxZ + 1 });
+            await setDoc(newEmojiRef, {
+                albumId: activeAlbum.id, type: isAnim ? 'animated' : 'emoji', content: emoji,
+                x: startX, y: startY, width: 120, rotation: Math.floor(Math.random() * 20) - 10,
+                zIndex: maxZ + 1, animationStyle: isAnim ? 'animate-bounce' : null, isLocked: false, folderId: null
+            });
             setSelectedItemId(newEmojiRef.id);
             setShowStickerMenu(false);
         } catch (error) { if (error.code === 'permission-denied') setDbError('permissions'); }
@@ -275,15 +447,28 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                 setPhotoDescText(photoToEdit.description || "");
                 setStickerBgColor(photoToEdit.frameColor || "#faf9f5");
                 setPhotoTapeStyle(photoToEdit.tapeStyle || "top");
-            } else if (type === 'lazo') {
-                setStickerBgColor(photoToEdit.color || "#1f2937");
+            } else if (type === 'lazo' || type === 'lazo_guia') {
+                setStickerBgColor(photoToEdit.color || (type === 'lazo_guia' ? "#3b82f6" : "#1f2937"));
                 setLazoTexture(photoToEdit.texture || "hilo");
                 setLazoThickness(photoToEdit.thickness || 3);
                 setLazoIsSmooth(photoToEdit.isSmooth !== false);
+                if (type === 'lazo_guia') {
+                    setTourOrder(photoToEdit.tourOrder || 1);
+                    setTourZoomLevel(photoToEdit.tourZoom || 1);
+                    setTourSpeed(photoToEdit.tourSpeed || 250);
+                    setTourMessage(photoToEdit.tourMessage || "");
+                    setTourVisible(photoToEdit.tourVisible || false);
+                }
             } else if (type === 'drawing') {
                 setStickerBgColor(photoToEdit.color || "#1f2937");
                 setLazoThickness(photoToEdit.thickness || 3);
                 setStickerInputText(photoToEdit.src || "");
+            } else if (type === 'animated') {
+                setStickerInputText(photoToEdit.content || "");
+                setAnimStyle(photoToEdit.animationStyle || "animate-bounce");
+            } else if (type === 'folder') {
+                setStickerInputText(photoToEdit.content || "");
+                setStickerBgColor(photoToEdit.color || "#3b82f6");
             } else {
                 setStickerInputText(photoToEdit.content || "");
                 setStickerInputUrl(photoToEdit.url || "");
@@ -303,6 +488,8 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
             setStickerIsBold(type === 'link' || type === 'location' || type === 'date' || type === 'music' || type === 'counter');
             setStickerIsItalic(false);
             setLazoThickness(3);
+            setTourVisible(false);
+            setAnimStyle("animate-bounce");
             setStickerDate(new Date().toISOString().split('T')[0]);
         }
         setShowStickerMenu(false);
@@ -323,12 +510,50 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
         </div>
     );
 
+    const folders = activePhotos.filter(p => p.type === 'folder').sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    const items = activePhotos.filter(p => p.type !== 'folder').sort((a, b) => (b.zIndex || 0) - (a.zIndex || 0));
+
+    const renderLayerItem = (p) => {
+        const isEditable = !p.type || ['image', 'postit', 'date', 'link', 'music', 'counter', 'location', 'lazo', 'lazo_guia', 'drawing', 'animated'].includes(p.type);
+        return (
+            <div key={p.id} onClick={() => setSelectedItemId(p.id)} className={`flex items-center justify-between p-2 rounded-lg text-sm group cursor-pointer transition-all border ${selectedItemId === p.id ? 'bg-indigo-50 border-indigo-300 shadow-sm scale-[1.02]' : 'bg-white border-transparent hover:border-stone-200'} ${p.isLocked ? 'opacity-60 grayscale' : ''}`}>
+                <span className={`truncate w-24 font-medium text-[11px] ${selectedItemId === p.id ? 'text-indigo-800' : 'text-stone-600'}`}>
+                    {p.type === 'postit' ? 'Post-it' : p.type === 'date' ? 'Fecha' : p.type === 'location' ? 'Ubicación' : p.type === 'link' ? 'Enlace' : p.type === 'music' ? 'Canción' : p.type === 'counter' ? 'Contador' : p.type === 'lazo' ? 'Lazo' : p.type === 'lazo_guia' ? 'Lazo Guía' : p.type === 'drawing' ? 'Dibujo Libre' : p.type === 'animated' ? 'Animación' : p.type === 'emoji' ? p.content : 'Imagen'}
+                </span>
+                <div className="flex gap-0.5 opacity-40 group-hover:opacity-100 transition-opacity">
+
+                    <div className="relative">
+                        <button onClick={(e) => { e.stopPropagation(); setAssignFolderId(assignFolderId === p.id ? null : p.id); }} className="p-1 hover:bg-amber-100 text-amber-600 rounded transition-all" title="Asignar a carpeta"><FolderPlus size={12} /></button>
+                        {assignFolderId === p.id && (
+                            <div className="absolute right-0 top-full mt-1 bg-white border border-stone-200 z-[100000] p-1.5 flex flex-col gap-0.5 rounded-xl shadow-xl w-36 cursor-default">
+                                <button onClick={(e) => { e.stopPropagation(); updatePhoto(p.id, { folderId: null }); setAssignFolderId(null); }} className="text-[10px] font-bold text-left px-2 py-1.5 hover:bg-stone-100 rounded-lg text-stone-500">Sin carpeta</button>
+                                {folders.map(f => (
+                                    <button key={f.id} onClick={(e) => { e.stopPropagation(); updatePhoto(p.id, { folderId: f.id }); setAssignFolderId(null); }} className="text-[10px] font-bold text-left px-2 py-1.5 hover:bg-stone-100 rounded-lg flex items-center gap-1.5 text-stone-700">
+                                        <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: f.color }}></div>
+                                        <span className="truncate">{f.content}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+
+                    <button onClick={(e) => { e.stopPropagation(); updatePhoto(p.id, { isLocked: !p.isLocked }); }} className="p-1 hover:bg-stone-200 text-stone-700 rounded transition-all" title={p.isLocked ? 'Desbloquear' : 'Bloquear'}>
+                        {p.isLocked ? <Lock size={12} className="text-rose-500" /> : <Unlock size={12} />}
+                    </button>
+                    {isEditable && <button onClick={(e) => { e.stopPropagation(); openStickerModal(p.type, p); }} className="p-1 hover:bg-blue-100 text-blue-600 rounded transition-all" title="Editar"><Edit2 size={12} /></button>}
+                    <button onClick={(e) => { e.stopPropagation(); bringToFront(p.id); }} className="p-1 hover:bg-indigo-100 text-indigo-600 rounded transition-all" title="Traer al frente"><ChevronUp size={12} /></button>
+                    <button onClick={(e) => { e.stopPropagation(); setDeletePhotoId(p.id); }} className="p-1 hover:bg-rose-100 text-rose-600 rounded transition-all" title="Eliminar"><Trash2 size={12} /></button>
+                </div>
+            </div>
+        );
+    };
+
     return (
         <div className="h-screen flex flex-col font-sans overflow-hidden bg-stone-100 relative">
             {/* HEADER CONTROLS (Ocultos al imprimir) */}
             <div className="absolute top-6 left-6 right-6 z-[99999] flex justify-between gap-4 pointer-events-none print:hidden">
                 <div className="bg-white/90 backdrop-blur-md px-5 py-3 rounded-2xl shadow-sm border border-white flex items-center gap-5 pointer-events-auto">
-                    <button onClick={() => { setCurrentView('dashboard'); setActiveAlbumId(null); setSelectedItemId(null); }} className="p-2 text-stone-500 hover:bg-stone-100 rounded-full hover:scale-110 active:scale-95 transition-all"><ArrowLeft size={22} /></button>
+                    <button onClick={() => { setCurrentView('dashboard'); setActiveAlbumId(null); setSelectedItemId(null); stopTour(); }} className="p-2 text-stone-500 hover:bg-stone-100 rounded-full hover:scale-110 active:scale-95 transition-all"><ArrowLeft size={22} /></button>
                     <div><h2 className="text-xl font-bold font-serif text-stone-800">{activeAlbum?.name}</h2></div>
                 </div>
                 <div className="flex items-center gap-3 pointer-events-auto">
@@ -368,12 +593,14 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                                         </div>
                                         <div className="border-t border-stone-100 my-1"></div>
                                         <div className="flex gap-1 px-1 py-2">
-                                            <button onClick={() => { setIsDrawingLazo(true); setShowStickerMenu(false); }} className="flex-1 flex flex-col items-center justify-center gap-1 p-2 bg-stone-800 text-white rounded-xl text-xs font-bold hover:scale-[1.02] active:scale-95 transition-all shadow-md"><PenTool size={16} /> Lazo</button>
-                                            <button onClick={() => openStickerModal('drawing')} className="flex-1 flex flex-col items-center justify-center gap-1 p-2 bg-purple-600 text-white rounded-xl text-xs font-bold hover:scale-[1.02] active:scale-95 transition-all shadow-md"><Brush size={16} /> Dibujo Libre</button>
+                                            <button onClick={() => { setDrawingLazoType('lazo'); setShowStickerMenu(false); setSelectedItemId(null); }} className="flex-1 flex flex-col items-center justify-center gap-1 p-2 bg-stone-800 text-white rounded-xl text-[10px] font-bold hover:scale-[1.02] active:scale-95 transition-all shadow-md"><PenTool size={16} /> Lazo Decorativo</button>
+                                            <button onClick={() => { setDrawingLazoType('lazo_guia'); setShowStickerMenu(false); setSelectedItemId(null); }} className="flex-1 flex flex-col items-center justify-center gap-1 p-2 bg-blue-600 text-white rounded-xl text-[10px] font-bold hover:scale-[1.02] active:scale-95 transition-all shadow-md"><Navigation size={16} /> Lazo Guía (Tour)</button>
+                                            <button onClick={() => openStickerModal('drawing')} className="flex-1 flex flex-col items-center justify-center gap-1 p-2 bg-purple-600 text-white rounded-xl text-[10px] font-bold hover:scale-[1.02] active:scale-95 transition-all shadow-md"><Brush size={16} /> Dibujo Libre</button>
                                         </div>
                                         <div className="border-t border-stone-100 my-1"></div>
 
                                         <div className="flex flex-col gap-4 px-3 py-3 max-h-80 overflow-y-auto">
+                                            <div><p className="text-[10px] font-bold text-blue-500 uppercase tracking-wider mb-2">Animaciones (Solo en Recorrido)</p><div className="flex flex-wrap gap-2">{['✨', '💖', '🔥', '🦋', '🫧', '🎉', '🕊️', '☄️'].map(e => <button key={e} onClick={() => handleAddEmoji(e, true)} className="text-xl hover:scale-125 active:scale-95 transition-transform" title="Añadir animación">{e}</button>)}</div></div>
                                             <div><p className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-2">Pines y Papelería</p><div className="flex flex-wrap gap-2">{['📌', '📍', '📎', '🖇️', '🏷️', '🩹', '📏', '✂️', '🗑️', '📋'].map(e => <button key={e} onClick={() => handleAddEmoji(e)} className="text-xl hover:scale-125 active:scale-95 transition-transform" title="Añadir al lienzo">{e}</button>)}</div></div>
                                             <div><p className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-2">Fotografía y Scrapbook</p><div className="flex flex-wrap gap-2">{['📷', '📸', '🎞️', '📽️', '🖼️', '📔', '📓', '🎨', '🖌️', '🔍'].map(e => <button key={e} onClick={() => handleAddEmoji(e)} className="text-xl hover:scale-125 active:scale-95 transition-transform" title="Añadir al lienzo">{e}</button>)}</div></div>
                                             <div><p className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-2">Estrellas y Galaxias</p><div className="flex flex-wrap gap-2">{['🌌', '🪐', '🌍', '🌕', '🌖', '🌗', '🌘', '🌑', '🌒', '🌓', '🌔', '🌙', '☀️', '⭐', '🌟', '✨', '☄️', '🌠', '🚀', '🛸', '🔭', '👽'].map(e => <button key={e} onClick={() => handleAddEmoji(e)} className="text-xl hover:scale-125 active:scale-95 transition-transform" title="Añadir al lienzo">{e}</button>)}</div></div>
@@ -382,7 +609,6 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                                             <div><p className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-2">Biología & Naturaleza</p><div className="flex flex-wrap gap-2">{['🧬', '🔬', '🦠', '🌿', '🍄', '🌱', '🌳', '🍂', '🌵', '🌾', '🌴', '🌺', '🌻', '🌼', '🌷', '🐞', '🦋', '🐝', '🐜', '🕷️', '🕸️'].map(e => <button key={e} onClick={() => handleAddEmoji(e)} className="text-xl hover:scale-125 active:scale-95 transition-transform">{e}</button>)}</div></div>
                                             <div><p className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-2">Aves</p><div className="flex flex-wrap gap-2">{['🦅', '🦉', '🦜', '🦆', '🦩', '🕊️', '🐧', '🪶', '🦢', '🐓', '🦚', '🦃', '🐥', '🐤', '🐣'].map(e => <button key={e} onClick={() => handleAddEmoji(e)} className="text-xl hover:scale-125 active:scale-95 transition-transform">{e}</button>)}</div></div>
                                             <div><p className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-2">Vida Marina</p><div className="flex flex-wrap gap-2">{['🐟', '🐠', '🐡', '🦈', '🐙', '🦀', '🐢', '🐋', '🐚', '🐬', '🦑', '🦐', '🦞', '🦭', '🫧', '🌊'].map(e => <button key={e} onClick={() => handleAddEmoji(e)} className="text-xl hover:scale-125 active:scale-95 transition-transform">{e}</button>)}</div></div>
-                                            <div><p className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-2">Generales</p><div className="flex flex-wrap gap-2">{['💖', '🌟', '✨', '✈️', '🎉', '🎈', '🎁', '🔮', '💡', '💌', '📝', '✏️', '✒️', '🖋️', '🖍️'].map(e => <button key={e} onClick={() => handleAddEmoji(e)} className="text-xl hover:scale-125 active:scale-95 transition-transform">{e}</button>)}</div></div>
                                         </div>
                                     </div>
                                 )}
@@ -394,13 +620,13 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                             </label>
                         </>
                     )}
-                    <button onClick={() => { setIsEditMode(!isEditMode); setSelectedItemId(null); setShowBgMenu(false); setShowLayers(false); setShowStickerMenu(false); setIsDrawingLazo(false); }} className={`${btnClass} bg-white text-stone-700 border hover:bg-stone-50`}>
+                    <button onClick={() => { setIsEditMode(!isEditMode); setSelectedItemId(null); setShowBgMenu(false); setShowLayers(false); setShowStickerMenu(false); setDrawingLazoType(null); stopTour(); }} className={`${btnClass} bg-white text-stone-700 border hover:bg-stone-50`}>
                         {isEditMode ? <Check size={20} /> : <Edit3 size={20} />} {isEditMode ? 'Terminar Edición' : 'Editar Álbum'}
                     </button>
                 </div>
             </div>
 
-            {/* CONTROLES FLOTANTES DE ZOOM E IMPRESIÓN (Abajo a la derecha) */}
+            {/* CONTROLES FLOTANTES INFERIORES: ZOOM E IMPRESIÓN */}
             <div className="absolute bottom-8 right-8 z-[9000] flex flex-col gap-4 print:hidden pointer-events-none">
                 <button onClick={handlePrint} className="p-3.5 bg-stone-800 text-white rounded-full shadow-[0_8px_30px_rgb(0,0,0,0.2)] hover:bg-stone-700 hover:scale-110 active:scale-95 transition-all pointer-events-auto" title="Imprimir / Guardar PDF">
                     <Printer size={22} />
@@ -412,54 +638,125 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                 </div>
             </div>
 
-            {/* MENÚ DE CAPAS */}
-            {showLayers && isEditMode && (
-                <div className="absolute top-24 right-6 w-72 bg-white/95 backdrop-blur-md rounded-2xl shadow-xl p-4 z-[99999] border border-stone-200 print:hidden">
-                    <h3 className="font-bold mb-3 flex items-center justify-between text-stone-800">Capas <button onClick={() => setShowLayers(false)} className="p-1 hover:bg-stone-100 rounded-full hover:scale-110 active:scale-95 transition-all"><X size={16} /></button></h3>
-                    <div className="flex flex-col gap-2 max-h-80 overflow-y-auto pr-1">
-                        {[...activePhotos].sort((a, b) => (b.zIndex || 0) - (a.zIndex || 0)).map(p => {
-                            const isEditable = !p.type || ['image', 'postit', 'date', 'link', 'music', 'counter', 'location', 'lazo', 'drawing'].includes(p.type);
-                            return (
-                                <div key={p.id} onClick={() => setSelectedItemId(p.id)} className={`flex items-center justify-between p-2.5 rounded-xl text-sm group cursor-pointer transition-all border ${selectedItemId === p.id ? 'bg-indigo-50 border-indigo-300 shadow-sm scale-[1.02]' : 'bg-stone-50 border-stone-100 hover:border-indigo-200'}`}>
-                                    <span className={`truncate w-24 font-medium text-xs ${selectedItemId === p.id ? 'text-indigo-800' : 'text-stone-600'}`}>
-                                        {p.type === 'postit' ? 'Post-it' : p.type === 'date' ? 'Fecha' : p.type === 'location' ? 'Ubicación' : p.type === 'link' ? 'Enlace' : p.type === 'music' ? 'Canción' : p.type === 'counter' ? 'Contador' : p.type === 'lazo' ? 'Lazo' : p.type === 'drawing' ? 'Dibujo Libre' : p.type === 'emoji' ? p.content : 'Imagen'}
-                                    </span>
-                                    <div className="flex gap-0.5 opacity-80 group-hover:opacity-100 transition-opacity">
-                                        {isEditable && <button onClick={(e) => { e.stopPropagation(); openStickerModal(p.type, p); }} className="p-1.5 hover:bg-blue-100 text-blue-600 rounded-lg hover:scale-110 active:scale-95 transition-all" title="Editar"><Edit2 size={14} /></button>}
-                                        <button onClick={(e) => { e.stopPropagation(); bringToFront(p.id); }} className="p-1.5 hover:bg-indigo-100 text-indigo-600 rounded-lg hover:scale-110 active:scale-95 transition-all" title="Traer al frente"><ChevronUp size={14} /></button>
-                                        <button onClick={(e) => { e.stopPropagation(); setDeletePhotoId(p.id); }} className="p-1.5 hover:bg-rose-100 text-rose-600 rounded-lg hover:scale-110 active:scale-95 transition-all" title="Eliminar"><Trash2 size={14} /></button>
-                                    </div>
-                                </div>
-                            )
-                        })}
+            {/* CONTROLES DEL TOUR Y TIMELINE (VISTA GUIADA) */}
+            {!isEditMode && hasGuideLazos && (
+                <div className="absolute bottom-8 left-8 right-8 z-[9000] flex flex-col items-start gap-3 pointer-events-none print:hidden max-w-3xl">
+
+                    {tourStatus !== 'idle' && (
+                        <div className="bg-white/90 backdrop-blur-md rounded-2xl shadow-xl border border-blue-200 p-4 w-[320px] pointer-events-auto animate-in slide-in-from-left-8">
+                            <div className="flex items-center justify-between mb-2">
+                                <span className="text-xs font-bold text-blue-600 uppercase tracking-wider">Progreso del Recorrido</span>
+                                <span ref={progressTextRef} className="text-xs font-bold text-stone-500">0%</span>
+                            </div>
+                            <div className="relative h-2.5 bg-stone-200 rounded-full overflow-hidden">
+                                <div ref={progressBarRef} className="absolute top-0 left-0 h-full bg-blue-500 rounded-full transition-all duration-75" style={{ width: '0%' }}></div>
+                                {tourLazos.map((lazo, i) => (
+                                    <div key={lazo.id} className="absolute top-1/2 -translate-y-1/2 w-1.5 h-1.5 bg-white/80 rounded-full shadow-sm" style={{ left: `${(i / tourLazos.length) * 100}%` }}></div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="flex bg-white/90 backdrop-blur-md rounded-2xl shadow-xl border border-blue-200 overflow-hidden pointer-events-auto animate-in slide-in-from-left-8">
+                        <div className="bg-blue-600 text-white px-4 py-3 flex items-center justify-center font-bold text-sm tracking-wider uppercase">Tour</div>
+                        <button onClick={playTour} disabled={tourStatus === 'playing' || tourStatus === 'message'} className="p-3 hover:bg-blue-50 text-blue-600 disabled:opacity-30 disabled:hover:bg-transparent transition-colors" title="Reproducir"><Play size={20} fill="currentColor" /></button>
+                        <button onClick={pauseTour} disabled={tourStatus !== 'playing'} className="p-3 hover:bg-amber-50 text-amber-600 disabled:opacity-30 disabled:hover:bg-transparent transition-colors" title="Pausar"><Pause size={20} fill="currentColor" /></button>
+                        <button onClick={stopTour} disabled={tourStatus === 'idle'} className="p-3 hover:bg-rose-50 text-rose-600 disabled:opacity-30 disabled:hover:bg-transparent transition-colors" title="Detener"><Square size={20} fill="currentColor" /></button>
                     </div>
                 </div>
             )}
 
-            {/* CANVAS PRINCIPAL Y ÁREA EXPANDIDA (Soporta Zoom) */}
+            {/* MODAL DE MENSAJE DEL TOUR */}
+            {tourStatus === 'message' && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[99999] flex items-center justify-center p-4">
+                    <div className="bg-white p-10 rounded-3xl shadow-2xl max-w-lg text-center animate-in zoom-in-95">
+                        <MessageSquareText size={48} className="mx-auto mb-6 text-blue-500" />
+                        <p className="text-2xl font-serif text-stone-800 mb-10 leading-relaxed">{tourCurrentMessage}</p>
+                        <button onClick={continueTourAfterMessage} className="px-8 py-3 bg-blue-600 text-white rounded-full font-bold shadow-md hover:bg-blue-700 hover:scale-105 active:scale-95 transition-all text-lg">Continuar Recorrido</button>
+                    </div>
+                </div>
+            )}
+
+            {/* MENÚ DE CAPAS CON CARPETAS */}
+            {showLayers && isEditMode && (
+                <div className="absolute top-24 right-6 w-80 bg-white/95 backdrop-blur-md rounded-2xl shadow-xl p-4 z-[99999] border border-stone-200 print:hidden flex flex-col max-h-[80vh]">
+                    <div className="flex items-center justify-between mb-4">
+                        <h3 className="font-bold text-stone-800">Capas</h3>
+                        <div className="flex items-center gap-2">
+                            <button onClick={handleCreateFolder} className="flex items-center gap-1.5 px-3 py-1.5 bg-stone-100 hover:bg-stone-200 text-stone-700 rounded-lg text-xs font-bold transition-colors">
+                                <FolderPlus size={14} /> Nueva Carpeta
+                            </button>
+                            <button onClick={() => setShowLayers(false)} className="p-1.5 hover:bg-stone-100 rounded-full transition-all text-stone-500"><X size={16} /></button>
+                        </div>
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto pr-1 space-y-2">
+                        {folders.map(folder => (
+                            <div key={folder.id} className="border border-stone-200 rounded-xl overflow-hidden shadow-sm">
+                                <div
+                                    className="bg-stone-50 hover:bg-stone-100 p-2.5 flex justify-between items-center cursor-pointer transition-colors"
+                                    onClick={() => setOpenFolders(prev => ({ ...prev, [folder.id]: !prev[folder.id] }))}
+                                >
+                                    <div className="flex items-center gap-2">
+                                        <Folder size={16} fill={folder.color} color={folder.color} />
+                                        <span className="font-bold text-xs text-stone-700 truncate w-32">{folder.content}</span>
+                                    </div>
+                                    <div className="flex items-center gap-1">
+                                        <button onClick={(e) => { e.stopPropagation(); openStickerModal('folder', folder); }} className="p-1 hover:bg-blue-100 text-blue-600 rounded transition-colors"><Edit2 size={12} /></button>
+                                        <button onClick={(e) => { e.stopPropagation(); setDeletePhotoId(folder.id); }} className="p-1 hover:bg-rose-100 text-rose-600 rounded transition-colors"><Trash2 size={12} /></button>
+                                        <div className={`transform transition-transform ${openFolders[folder.id] ? 'rotate-180' : ''}`}><ChevronUp size={16} className="text-stone-400" /></div>
+                                    </div>
+                                </div>
+                                {openFolders[folder.id] && (
+                                    <div className="bg-stone-100 p-1.5 flex flex-col gap-1 border-t border-stone-200 shadow-inner">
+                                        {items.filter(i => i.folderId === folder.id).map(renderLayerItem)}
+                                        {items.filter(i => i.folderId === folder.id).length === 0 && <p className="text-[10px] text-stone-400 text-center py-2 italic">Carpeta vacía</p>}
+                                    </div>
+                                )}
+                            </div>
+                        ))}
+                        <div className="pt-2 flex flex-col gap-1">
+                            {items.filter(i => !i.folderId).map(renderLayerItem)}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* CANVAS PRINCIPAL Y ÁREA EXPANDIDA (Zoom Suave) */}
             <div
                 ref={scrollContainerRef}
                 className={`flex-1 relative w-full overflow-auto transition-colors duration-500 ${bgClass} print:bg-white print:overflow-visible`}
             >
                 <div
-                    className="w-[4000px] h-[3000px] origin-top-left transition-transform duration-200"
+                    className="w-[4000px] h-[3000px] origin-top-left transition-transform duration-500 ease-out"
                     style={{ transform: `scale(${zoom})` }}
-                    onPointerDown={() => isEditMode && !isDrawingLazo && setSelectedItemId(null)}
+                    onPointerDown={() => isEditMode && !drawingLazoType && setSelectedItemId(null)}
                 >
-                    {/* Capa de intercepción para dibujar el lazo */}
-                    {isDrawingLazo && (
-                        <div className="absolute inset-0 z-[200] cursor-crosshair" onPointerDown={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setLazoPoints(prev => [...prev, { x: (e.clientX - rect.left) / zoom, y: (e.clientY - rect.top) / zoom }]); }}>
+                    {/* AQUÍ SE APLICA EL MODO FANTASMA CUANDO ESTAMOS DIBUJANDO EL LAZO */}
+                    {drawingLazoType && (
+                        <div className="absolute inset-0 z-[8000] cursor-crosshair" onPointerDown={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setLazoPoints(prev => [...prev, { x: (e.clientX - rect.left) / zoom, y: (e.clientY - rect.top) / zoom }]); }}>
                             <svg className="w-full h-full pointer-events-none drop-shadow-md">
-                                {lazoPoints.length > 0 && <path d={getLazoPath(lazoPoints, true)} fill="none" stroke="#1f2937" strokeWidth="3" strokeDasharray="8 8" strokeLinecap="round" strokeLinejoin="round" />}
-                                {lazoPoints.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r="5" fill="#3b82f6" stroke="white" strokeWidth="2" />)}
+                                {lazoPoints.length > 0 && <path d={getLazoPath(lazoPoints, true)} fill="none" stroke={drawingLazoType === 'lazo_guia' ? '#3b82f6' : '#1f2937'} strokeWidth="3" strokeDasharray={drawingLazoType === 'lazo_guia' ? '12 12' : '8 8'} strokeLinecap="round" strokeLinejoin="round" />}
+                                {lazoPoints.map((p, i) => (
+                                    <g key={i}>
+                                        <circle cx={p.x} cy={p.y} r="5" fill="#3b82f6" stroke="white" strokeWidth="2" />
+                                        {drawingLazoType === 'lazo_guia' && <text x={p.x + 10} y={p.y - 10} fill="#3b82f6" fontSize="16" fontWeight="bold">{i + 1}</text>}
+                                    </g>
+                                ))}
                             </svg>
                         </div>
                     )}
 
                     <div className="w-full h-full relative pointer-events-none">
                         <div className="pointer-events-auto w-full h-full">
-                            {activePhotos.map(photo => (
-                                <InteractablePhoto key={photo.id} photo={photo} updatePhoto={updatePhoto} deletePhoto={(id) => { setDeletePhotoId(id); setSelectedItemId(null); }} isEditMode={isEditMode && !isDrawingLazo} isSelected={selectedItemId === photo.id} onSelect={() => setSelectedItemId(photo.id)} onBringToFront={bringToFront} onClickView={(p) => setSelectedPhotoForDesc(p)} onEditClick={(p) => openStickerModal(p.type, p)} zoom={zoom} />
+                            {items.map(photo => (
+                                <InteractablePhoto
+                                    key={photo.id} photo={photo} updatePhoto={updatePhoto} deletePhoto={(id) => { setDeletePhotoId(id); setSelectedItemId(null); }}
+                                    isEditMode={isEditMode && !drawingLazoType}
+                                    isSelected={selectedItemId === photo.id} onSelect={() => setSelectedItemId(photo.id)} onBringToFront={bringToFront} onClickView={(p) => setSelectedPhotoForDesc(p)} onEditClick={(p) => openStickerModal(p.type, p)}
+                                    zoom={zoom} isTourPlaying={tourStatus === 'playing'}
+                                    isDrawingMode={!!drawingLazoType}
+                                />
                             ))}
                         </div>
                     </div>
@@ -467,14 +764,14 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
             </div>
 
             {/* PANEL FIJO MIENTRAS SE DIBUJA EL LAZO */}
-            {isDrawingLazo && (
+            {drawingLazoType && (
                 <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-white/95 backdrop-blur-md p-5 rounded-2xl shadow-[0_20px_60px_-15px_rgba(0,0,0,0.3)] flex items-center gap-6 border border-stone-200 z-[99999]">
-                    <div><p className="font-bold text-stone-800 text-lg">Trazando Lazo...</p><p className="text-sm text-stone-500">Haz clic en diferentes puntos para dibujar</p></div>
-                    <div className="flex gap-3"><button onClick={() => { setIsDrawingLazo(false); setLazoPoints([]); }} className="px-5 py-2 hover:bg-stone-100 rounded-full font-medium hover:scale-105 active:scale-95 transition-all text-stone-600">Cancelar</button><button onClick={finishDrawingLazo} className="px-6 py-2 bg-stone-800 text-white rounded-full font-bold shadow-md hover:bg-stone-700 hover:scale-105 active:scale-95 transition-all">Terminar Lazo</button></div>
+                    <div><p className="font-bold text-stone-800 text-lg">Trazando {drawingLazoType === 'lazo_guia' ? 'Lazo Guía' : 'Lazo'}...</p><p className="text-sm text-stone-500">Haz clic en diferentes puntos para dibujar</p></div>
+                    <div className="flex gap-3"><button onClick={() => { setDrawingLazoType(null); setLazoPoints([]); }} className="px-5 py-2 hover:bg-stone-100 rounded-full font-medium hover:scale-105 active:scale-95 transition-all text-stone-600">Cancelar</button><button onClick={finishDrawingLazo} className="px-6 py-2 bg-stone-800 text-white rounded-full font-bold shadow-md hover:bg-stone-700 hover:scale-105 active:scale-95 transition-all">Terminar Trazado</button></div>
                 </div>
             )}
 
-            {/* MODAL MODO FACEBOOK (PANTALLA COMPLETA) - z-[99999] */}
+            {/* MODAL MODO FACEBOOK (PANTALLA COMPLETA) */}
             {selectedPhotoForDesc && !isEditMode && (
                 <div className="fixed inset-0 bg-black/95 z-[99999] flex flex-col md:flex-row animate-in fade-in duration-300 print:hidden" onClick={() => setSelectedPhotoForDesc(null)}>
                     <button className="absolute top-4 left-4 z-50 text-white/50 hover:text-white p-2 hover:scale-110 active:scale-95 transition-all" onClick={() => setSelectedPhotoForDesc(null)}><X size={32} /></button>
@@ -488,12 +785,26 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                 </div>
             )}
 
-            {/* OTROS MODALES DE EDICIÓN (z-[99999]) */}
+            {/* OTROS MODALES DE EDICIÓN */}
             {deletePhotoId && (
                 <div className="fixed inset-0 bg-stone-900/60 z-[99999] flex items-center justify-center p-4 backdrop-blur-sm print:hidden"><div className="bg-white p-8 rounded-3xl w-full max-w-sm"><h2 className="text-2xl font-bold mb-4">Eliminar Elemento</h2><div className="flex justify-end gap-3"><button onClick={() => setDeletePhotoId(null)} className="px-5 py-2 hover:bg-stone-100 rounded-full font-medium hover:scale-105 active:scale-95 transition-all">Cancelar</button><button onClick={confirmDeletePhoto} className="px-6 py-2 bg-rose-600 text-white rounded-full font-bold hover:scale-105 active:scale-95 transition-all shadow-md hover:bg-rose-700">Eliminar</button></div></div></div>
             )}
 
-            {/* Modal: Dibujo Libre (NUEVO) */}
+            {/* Modal: Editar Carpeta */}
+            {stickerModalType === 'folder' && (
+                <div className="fixed inset-0 bg-stone-900/60 z-[99999] flex items-center justify-center p-4 backdrop-blur-sm print:hidden">
+                    <div className="bg-white rounded-3xl p-8 w-full max-w-sm shadow-2xl">
+                        <h2 className="text-2xl font-bold mb-6 flex items-center gap-2 text-stone-800"><FolderPlus /> Propiedades de Carpeta</h2>
+                        <input type="text" value={stickerInputText} onChange={(e) => setStickerInputText(e.target.value)} placeholder="Nombre de la carpeta" className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl mb-6 font-medium" autoFocus />
+                        <label className="flex items-center gap-3 text-sm font-medium mb-8 cursor-pointer hover:scale-[1.02] transition-transform">
+                            <input type="color" value={stickerBgColor} onChange={e => setStickerBgColor(e.target.value)} className="w-10 h-10 p-0 border-2 border-stone-300 rounded cursor-pointer" /> Color de Identificación
+                        </label>
+                        <div className="flex justify-end gap-3"><button onClick={() => { setStickerModalType(null); setEditingStickerId(null); }} className="px-5 py-2 font-medium hover:bg-stone-100 rounded-full hover:scale-105 active:scale-95 transition-all text-stone-600">Cancelar</button><button onClick={() => handleSaveSticker('folder')} className="px-6 py-2 bg-stone-800 text-white rounded-full font-bold shadow-md hover:bg-stone-700 hover:scale-105 active:scale-95 transition-all">Guardar</button></div>
+                    </div>
+                </div>
+            )}
+
+            {/* Modal: Dibujo Libre */}
             {stickerModalType === 'drawing' && (
                 <div className="fixed inset-0 bg-stone-900/60 z-[99999] flex items-center justify-center p-4 backdrop-blur-sm print:hidden">
                     <div className="bg-white rounded-3xl p-8 w-full max-w-md shadow-2xl">
@@ -548,30 +859,36 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                 </div>
             )}
 
-            {/* Modal: Editar Lazo */}
-            {stickerModalType === 'lazo' && (
+            {/* Modal: Editar Lazo y Lazo Guía */}
+            {(stickerModalType === 'lazo' || stickerModalType === 'lazo_guia') && (
                 <div className="fixed inset-0 bg-stone-900/60 z-[99999] flex items-center justify-center p-4 backdrop-blur-sm print:hidden">
-                    <div className="bg-white rounded-3xl p-8 w-full max-w-md shadow-2xl">
-                        <h2 className="text-2xl font-bold mb-6 flex items-center gap-2 text-stone-800"><PenTool /> Editar Lazo / Conector</h2>
+                    <div className="bg-white rounded-3xl p-8 w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto">
+                        <h2 className="text-2xl font-bold mb-6 flex items-center gap-2 text-stone-800">
+                            {stickerModalType === 'lazo_guia' ? <><Navigation /> Editar Lazo Guía (Tour)</> : <><PenTool /> Editar Lazo</>}
+                        </h2>
+
+                        {stickerModalType === 'lazo_guia' && (
+                            <div className="bg-blue-50 p-4 rounded-xl border border-blue-200 mb-6">
+                                <p className="text-xs font-bold text-blue-600 uppercase tracking-wider mb-4">Configuración del Recorrido</p>
+
+                                <div className="mb-4 flex items-center justify-between bg-white p-3 rounded-lg border border-blue-200">
+                                    <span className="text-sm font-bold text-stone-700">Línea Visible en el Recorrido</span>
+                                    <button onClick={() => setTourVisible(!tourVisible)} className={`w-12 h-6 rounded-full transition-colors relative flex items-center px-1 ${tourVisible ? 'bg-blue-500' : 'bg-stone-300'}`}><div className={`w-4 h-4 bg-white rounded-full shadow-sm transform transition-transform ${tourVisible ? 'translate-x-6' : 'translate-x-0'}`}></div></button>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-4 mb-4">
+                                    <div><label className="block text-xs font-bold text-stone-500 mb-1">Orden</label><input type="number" min="1" value={tourOrder} onChange={(e) => setTourOrder(parseInt(e.target.value))} className="w-full p-2 bg-white border border-blue-200 rounded-lg text-center font-bold" /></div>
+                                    <div><label className="block text-xs font-bold text-stone-500 mb-1">Velocidad</label><input type="number" min="50" max="1000" step="50" value={tourSpeed} onChange={(e) => setTourSpeed(parseInt(e.target.value))} className="w-full p-2 bg-white border border-blue-200 rounded-lg text-center font-bold" /></div>
+                                </div>
+                                <div className="mb-4"><label className="flex justify-between text-xs font-bold text-stone-500 mb-1"><span>Zoom de Cámara</span><span>{tourZoomLevel}x</span></label><input type="range" min="0.5" max="2.5" step="0.1" value={tourZoomLevel} onChange={(e) => setTourZoomLevel(parseFloat(e.target.value))} className="w-full accent-blue-600" /></div>
+                                <div><label className="block text-xs font-bold text-stone-500 mb-1">Mensaje final (Opcional)</label><textarea value={tourMessage} onChange={(e) => setTourMessage(e.target.value)} placeholder="Ej. ¡Llegamos a la cascada!" className="w-full p-2 bg-white border border-blue-200 rounded-lg text-sm resize-none h-16" /></div>
+                            </div>
+                        )}
 
                         <div className="bg-stone-50 p-4 rounded-xl border border-stone-200 mb-6">
-                            <label className="flex items-center gap-3 text-sm font-medium mb-6 cursor-pointer hover:scale-[1.02] transition-transform">
-                                <input type="color" value={stickerBgColor} onChange={e => setStickerBgColor(e.target.value)} className="w-10 h-10 p-0 border-2 border-stone-300 rounded cursor-pointer" /> Color de la Línea
-                            </label>
-
-                            <div className="mb-6">
-                                <label className="flex justify-between text-xs font-bold text-stone-500 uppercase tracking-wider mb-2">
-                                    <span>Grosor</span>
-                                    <span>{lazoThickness}px</span>
-                                </label>
-                                <input type="range" min="1" max="20" value={lazoThickness} onChange={(e) => setLazoThickness(parseInt(e.target.value))} className="w-full accent-stone-800 cursor-pointer" />
-                            </div>
-
-                            <div className="mb-6 flex items-center justify-between bg-white p-3 rounded-lg border border-stone-200">
-                                <span className="text-sm font-bold text-stone-700">Curvas Suaves</span>
-                                <button onClick={() => setLazoIsSmooth(!lazoIsSmooth)} className={`w-12 h-6 rounded-full transition-colors relative flex items-center px-1 ${lazoIsSmooth ? 'bg-emerald-500' : 'bg-stone-300'}`}><div className={`w-4 h-4 bg-white rounded-full shadow-sm transform transition-transform ${lazoIsSmooth ? 'translate-x-6' : 'translate-x-0'}`}></div></button>
-                            </div>
-
+                            <label className="flex items-center gap-3 text-sm font-medium mb-6 cursor-pointer hover:scale-[1.02] transition-transform"><input type="color" value={stickerBgColor} onChange={e => setStickerBgColor(e.target.value)} className="w-10 h-10 p-0 border-2 border-stone-300 rounded cursor-pointer" /> Color de la Línea</label>
+                            <div className="mb-6"><label className="flex justify-between text-xs font-bold text-stone-500 uppercase tracking-wider mb-2"><span>Grosor</span><span>{lazoThickness}px</span></label><input type="range" min="1" max="20" value={lazoThickness} onChange={(e) => setLazoThickness(parseInt(e.target.value))} className="w-full accent-stone-800 cursor-pointer" /></div>
+                            <div className="mb-6 flex items-center justify-between bg-white p-3 rounded-lg border border-stone-200"><span className="text-sm font-bold text-stone-700">Curvas Suaves</span><button onClick={() => setLazoIsSmooth(!lazoIsSmooth)} className={`w-12 h-6 rounded-full transition-colors relative flex items-center px-1 ${lazoIsSmooth ? 'bg-emerald-500' : 'bg-stone-300'}`}><div className={`w-4 h-4 bg-white rounded-full shadow-sm transform transition-transform ${lazoIsSmooth ? 'translate-x-6' : 'translate-x-0'}`}></div></button></div>
                             <p className="text-xs font-bold text-stone-500 uppercase tracking-wider mb-3">Textura / Estilo</p>
                             <div className="grid grid-cols-2 gap-2">
                                 <button onClick={() => setLazoTexture('hilo')} className={`py-2 text-sm rounded-lg font-bold border transition-all active:scale-95 ${lazoTexture === 'hilo' ? 'bg-stone-800 text-white border-stone-800' : 'bg-white text-stone-700 border-stone-200 hover:bg-stone-100'}`}>Hilo Sólido</button>
@@ -581,13 +898,13 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                                 <button onClick={() => setLazoTexture('bidireccional')} className={`py-2 text-sm rounded-lg font-bold border col-span-2 transition-all active:scale-95 ${lazoTexture === 'bidireccional' ? 'bg-stone-800 text-white border-stone-800' : 'bg-white text-stone-700 border-stone-200 hover:bg-stone-100'}`}>Bidireccional ↔️</button>
                             </div>
                         </div>
-                        <div className="flex justify-end gap-3"><button onClick={() => { setStickerModalType(null); setEditingStickerId(null); }} className="px-5 py-2 font-medium hover:bg-stone-100 rounded-full hover:scale-105 active:scale-95 transition-all text-stone-600">Cancelar</button><button onClick={() => handleSaveSticker('lazo')} className="px-6 py-2 bg-stone-800 text-white rounded-full font-bold shadow-md hover:bg-stone-700 hover:scale-105 active:scale-95 transition-all">Guardar Cambios</button></div>
+                        <div className="flex justify-end gap-3"><button onClick={() => { setStickerModalType(null); setEditingStickerId(null); }} className="px-5 py-2 font-medium hover:bg-stone-100 rounded-full hover:scale-105 active:scale-95 transition-all text-stone-600">Cancelar</button><button onClick={() => handleSaveSticker(stickerModalType)} className="px-6 py-2 bg-stone-800 text-white rounded-full font-bold shadow-md hover:bg-stone-700 hover:scale-105 active:scale-95 transition-all">Guardar Cambios</button></div>
                     </div>
                 </div>
             )}
 
-            {/* Modales: Post-it, Fecha, Enlace, Ubicación, Canción, Contador */}
-            {(stickerModalType === 'postit' || stickerModalType === 'date' || stickerModalType === 'link' || stickerModalType === 'location' || stickerModalType === 'music' || stickerModalType === 'counter') && (
+            {/* Modales Genéricos y Pegatina Animada */}
+            {(['postit', 'date', 'link', 'location', 'music', 'counter', 'animated'].includes(stickerModalType)) && (
                 <div className="fixed inset-0 bg-stone-900/60 z-[99999] flex items-center justify-center p-4 backdrop-blur-sm print:hidden">
                     <div className="bg-white rounded-3xl p-8 w-full max-w-sm shadow-2xl">
                         <h2 className="text-2xl font-bold mb-4 flex items-center gap-2">
@@ -597,17 +914,14 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                             {stickerModalType === 'location' && <MapPin />}
                             {stickerModalType === 'music' && <Music />}
                             {stickerModalType === 'counter' && <Hash />}
+                            {stickerModalType === 'animated' && '✨ '}
                             {editingStickerId ? 'Editar Elemento' : 'Nuevo Elemento'}
                         </h2>
-                        {renderStyleControls()}
 
-                        {/* Renderizado condicional de los inputs según el tipo */}
-                        {stickerModalType === 'postit' && (
-                            <textarea value={stickerInputText} onChange={(e) => setStickerInputText(e.target.value)} placeholder="Escribe tu nota..." className="w-full h-32 p-4 rounded-xl resize-none font-serif text-lg mb-6 outline-none focus:ring-2 focus:ring-stone-400 border border-stone-200 shadow-inner" style={{ backgroundColor: stickerBgColor, color: stickerTextColor, fontWeight: stickerIsBold ? 'bold' : 'normal', fontStyle: stickerIsItalic ? 'italic' : 'normal' }} autoFocus />
-                        )}
-                        {stickerModalType === 'date' && (
-                            <input type="date" value={stickerDate} onChange={(e) => setStickerDate(e.target.value)} className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl outline-none mb-8 text-xl text-center font-bold" />
-                        )}
+                        {stickerModalType !== 'animated' && renderStyleControls()}
+
+                        {stickerModalType === 'postit' && <textarea value={stickerInputText} onChange={(e) => setStickerInputText(e.target.value)} placeholder="Escribe tu nota..." className="w-full h-32 p-4 rounded-xl resize-none font-serif text-lg mb-6 outline-none focus:ring-2 focus:ring-stone-400 border border-stone-200 shadow-inner" style={{ backgroundColor: stickerBgColor, color: stickerTextColor, fontWeight: stickerIsBold ? 'bold' : 'normal', fontStyle: stickerIsItalic ? 'italic' : 'normal' }} autoFocus />}
+                        {stickerModalType === 'date' && <input type="date" value={stickerDate} onChange={(e) => setStickerDate(e.target.value)} className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl outline-none mb-8 text-xl text-center font-bold" />}
                         {(stickerModalType === 'link' || stickerModalType === 'location' || stickerModalType === 'music') && (
                             <>
                                 <input type="text" value={stickerInputText} onChange={(e) => setStickerInputText(e.target.value)} placeholder={stickerModalType === 'location' ? "Texto (Ej. Parque Estatal)" : stickerModalType === 'music' ? "Canción - Artista" : "Texto del botón"} className="w-full p-4 bg-stone-50 border border-stone-200 rounded-xl mb-4 font-medium text-center" autoFocus />
@@ -618,6 +932,17 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                             <div className="flex gap-3 mb-8">
                                 <input type="text" value={stickerInputUrl} onChange={(e) => setStickerInputUrl(e.target.value)} placeholder="0" className="w-24 p-4 bg-stone-50 border border-stone-200 rounded-xl outline-none font-black text-center text-3xl" autoFocus />
                                 <input type="text" value={stickerInputText} onChange={(e) => setStickerInputText(e.target.value)} placeholder="Días, Años, Fotos..." className="flex-1 p-4 bg-stone-50 border border-stone-200 rounded-xl outline-none font-bold uppercase tracking-widest text-sm" />
+                            </div>
+                        )}
+                        {stickerModalType === 'animated' && (
+                            <div className="mb-6">
+                                <p className="text-xs font-bold text-stone-500 uppercase tracking-wider mb-3">Estilo de Animación</p>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <button onClick={() => setAnimStyle('animate-bounce')} className={`py-2 text-sm rounded-lg font-bold border transition-all ${animStyle === 'animate-bounce' ? 'bg-blue-600 text-white border-blue-600' : 'bg-stone-50 border-stone-200 text-stone-700 hover:bg-stone-100'}`}>Rebotar</button>
+                                    <button onClick={() => setAnimStyle('animate-pulse')} className={`py-2 text-sm rounded-lg font-bold border transition-all ${animStyle === 'animate-pulse' ? 'bg-blue-600 text-white border-blue-600' : 'bg-stone-50 border-stone-200 text-stone-700 hover:bg-stone-100'}`}>Pulsar</button>
+                                    <button onClick={() => setAnimStyle('animate-spin')} className={`py-2 text-sm rounded-lg font-bold border transition-all ${animStyle === 'animate-spin' ? 'bg-blue-600 text-white border-blue-600' : 'bg-stone-50 border-stone-200 text-stone-700 hover:bg-stone-100'}`}>Girar</button>
+                                    <button onClick={() => setAnimStyle('animate-[ping_2s_cubic-bezier(0,0,0.2,1)_infinite]')} className={`py-2 text-sm rounded-lg font-bold border transition-all ${animStyle === 'animate-[ping_2s_cubic-bezier(0,0,0.2,1)_infinite]' ? 'bg-blue-600 text-white border-blue-600' : 'bg-stone-50 border-stone-200 text-stone-700 hover:bg-stone-100'}`}>Latir</button>
+                                </div>
                             </div>
                         )}
 

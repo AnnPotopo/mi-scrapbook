@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { RotateCw, Maximize2, Trash2, MessageSquareText, Calendar, Link as LinkIcon, MapPin, Edit2, Music, Hash } from 'lucide-react';
+import { RotateCw, Maximize2, Trash2, MessageSquareText, Calendar, Link as LinkIcon, MapPin, Edit2, Music, Hash, Lock } from 'lucide-react';
 
 export const getLazoPath = (pts, isSmooth) => {
     if (!pts || pts.length === 0) return "";
@@ -23,7 +23,7 @@ export const getLazoPath = (pts, isSmooth) => {
     return d;
 };
 
-export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isEditMode, isSelected, onSelect, onBringToFront, onClickView, onEditClick, zoom = 1 }) {
+export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isEditMode, isSelected, onSelect, onBringToFront, onClickView, onEditClick, zoom = 1, isTourPlaying = false, isDrawingMode = false }) {
     const [interaction, setInteraction] = useState(null);
     const [localTransform, setLocalTransform] = useState({
         x: photo.x, y: photo.y, width: photo.width, rotation: photo.rotation
@@ -45,7 +45,7 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
     }, [photo, interaction]);
 
     const handlePointerDown = (type, e, pointIndex = null) => {
-        if (!isEditMode) return;
+        if (!isEditMode || photo.isLocked) return;
         e.stopPropagation();
         e.preventDefault();
 
@@ -75,8 +75,6 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
 
         const handlePointerMove = (e) => {
             const s = startState.current;
-
-            // Ajustamos el movimiento del ratón dividiéndolo entre el nivel de zoom actual
             const dx = (e.clientX - s.mouseX) / zoom;
             const dy = (e.clientY - s.mouseY) / zoom;
 
@@ -143,16 +141,22 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
     const tapeStyle = photo.tapeStyle || 'top';
     const tapeGradient = 'linear-gradient(to right, rgba(255,255,255,0.1), rgba(255,255,255,0.6))';
 
+    // MAGIA DE BLOQUEO: Si el usuario está dibujando un lazo O si el objeto está bloqueado en modo edición,
+    // se aplica 'none' a los eventos del ratón. Esto hace que los clics atraviesen este objeto como un fantasma.
+    const interactionEvents = (isDrawingMode || (photo.isLocked && isEditMode)) ? 'none' : 'auto';
+
     return (
         <div
             ref={containerRef}
             style={{
                 position: 'absolute', left: `${localTransform.x}px`, top: `${localTransform.y}px`,
                 width: `${localTransform.width}px`, transform: `rotate(${localTransform.rotation}deg)`,
-                zIndex: photo.zIndex || 1, touchAction: 'none'
+                zIndex: photo.zIndex || 1, touchAction: 'none',
+                pointerEvents: interactionEvents
             }}
-            className={`group ${isEditMode ? 'cursor-move' : (isLinkable ? 'cursor-pointer hover:scale-105 active:scale-95 transition-all duration-200' : 'cursor-pointer hover:scale-[1.02] transition-transform duration-300')}`}
+            className={`group ${isEditMode && !photo.isLocked && !isDrawingMode ? 'cursor-move' : ''} ${!isEditMode && isLinkable ? 'cursor-pointer hover:scale-105 active:scale-95 transition-all duration-200' : (!isEditMode ? 'cursor-pointer hover:scale-[1.02] transition-transform duration-300' : '')} ${photo.isLocked && isEditMode ? 'opacity-90' : ''}`}
             onPointerDown={(e) => {
+                if (photo.isLocked || isDrawingMode) return;
                 if (isEditMode) handlePointerDown('drag', e);
                 else {
                     if (isLinkable) window.open(photo.url, '_blank', 'noopener,noreferrer');
@@ -160,6 +164,12 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                 }
             }}
         >
+            {isEditMode && photo.isLocked && (
+                <div className="absolute -top-3 -right-3 bg-rose-500 text-white rounded-full p-1.5 shadow-lg z-[100] print:hidden pointer-events-none">
+                    <Lock size={12} strokeWidth={3} />
+                </div>
+            )}
+
             {/* FOTOGRAFÍA */}
             {(!photo.type || photo.type === 'image') && (
                 <div style={{ backgroundColor: frameColor }} className={`p-3 pb-12 rounded-sm border relative transition-all duration-300 ${isEditMode && interaction === 'drag' ? 'border-amber-300 shadow-2xl scale-105' : 'border-stone-200 shadow-xl group-hover:shadow-2xl'}`}>
@@ -174,7 +184,7 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                     )}
                     <img src={photo.src} alt="Álbum" className="w-full h-auto object-cover pointer-events-none rounded-sm border border-black/10 shadow-inner" draggable="false" />
                     {!isEditMode && photo.description && (
-                        <div className="absolute bottom-3 left-0 w-full flex justify-center text-stone-500 print:hidden">
+                        <div className="absolute bottom-3 left-0 w-full flex justify-center text-stone-500 print:hidden pointer-events-none">
                             <div className="flex items-center gap-1.5 bg-white/80 px-3 py-1 rounded-full text-xs font-serif italic backdrop-blur-sm shadow-sm border border-stone-200/50">
                                 <MessageSquareText size={14} /> Leer recuerdo
                             </div>
@@ -183,45 +193,52 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                 </div>
             )}
 
-            {/* DIBUJO LIBRE */}
             {photo.type === 'drawing' && (
                 <div className="relative">
                     <img src={photo.src} alt="Dibujo Libre" className="w-full h-auto drop-shadow-md pointer-events-none select-none" draggable="false" />
                 </div>
             )}
 
-            {/* LAZO / CONECTOR */}
-            {photo.type === 'lazo' && (
-                <svg viewBox={`0 0 ${photo.baseWidth || photo.width} ${photo.baseHeight || photo.height}`} width="100%" height="100%" className="overflow-visible drop-shadow-md">
-                    <defs>
-                        <marker id={`arrow-head-${photo.id}`} markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto-start-reverse">
-                            <path d="M 0 0 L 6 3 L 0 6 z" fill={photo.color || '#1f2937'} />
-                        </marker>
-                    </defs>
-                    <path
-                        d={getLazoPath(localPoints, photo.isSmooth)}
-                        fill="none"
-                        stroke={photo.color || '#1f2937'}
-                        strokeWidth={photo.thickness || (photo.texture === 'estambre' ? 8 : photo.texture === 'hilo' ? 3 : 4)}
-                        strokeDasharray={photo.texture === 'punteada' ? '8 8' : photo.texture === 'estambre' ? '2 8' : 'none'}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        markerEnd={(photo.texture === 'flecha' || photo.texture === 'bidireccional') ? `url(#arrow-head-${photo.id})` : ''}
-                        markerStart={photo.texture === 'bidireccional' ? `url(#arrow-head-${photo.id})` : ''}
-                        className="pointer-events-none"
-                    />
-                    {isEditMode && isSelected && localPoints.map((p, index) => (
-                        <circle
-                            key={index}
-                            cx={p.x} cy={p.y} r={10 * ((photo.baseWidth || photo.width) / localTransform.width)}
-                            fill="#3b82f6"
-                            stroke="white"
-                            strokeWidth={2 * ((photo.baseWidth || photo.width) / localTransform.width)}
-                            className="cursor-crosshair pointer-events-auto hover:fill-blue-400 opacity-90 transition-colors print:hidden"
-                            onPointerDown={(e) => handlePointerDown('dragPoint', e, index)}
+            {/* LAZO Y LAZO GUÍA */}
+            {(photo.type === 'lazo' || photo.type === 'lazo_guia') && (
+                <div className="relative w-full h-full overflow-visible">
+                    {isEditMode && photo.type === 'lazo_guia' && (
+                        <div className="absolute -top-6 -left-6 bg-blue-600 text-white font-black text-lg w-8 h-8 rounded-full flex items-center justify-center shadow-lg border-2 border-white z-50 print:hidden pointer-events-none">
+                            {photo.tourOrder || 1}
+                        </div>
+                    )}
+
+                    <svg viewBox={`0 0 ${photo.baseWidth || photo.width} ${photo.baseHeight || photo.height}`} width="100%" height="100%" className={`overflow-visible drop-shadow-md pointer-events-none ${photo.type === 'lazo_guia' && !isEditMode && !photo.tourVisible ? 'opacity-0' : 'opacity-100 transition-opacity duration-300'}`}>
+                        <defs>
+                            <marker id={`arrow-head-${photo.id}`} markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto-start-reverse">
+                                <path d="M 0 0 L 6 3 L 0 6 z" fill={photo.color || (photo.type === 'lazo_guia' ? '#3b82f6' : '#1f2937')} />
+                            </marker>
+                        </defs>
+                        <path
+                            d={getLazoPath(localPoints, photo.isSmooth)}
+                            fill="none"
+                            stroke={photo.color || (photo.type === 'lazo_guia' ? '#3b82f6' : '#1f2937')}
+                            strokeWidth={photo.thickness || (photo.texture === 'estambre' ? 8 : photo.texture === 'hilo' ? 3 : 4)}
+                            strokeDasharray={photo.type === 'lazo_guia' ? '12 12' : (photo.texture === 'punteada' ? '8 8' : photo.texture === 'estambre' ? '2 8' : 'none')}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            markerEnd={(photo.texture === 'flecha' || photo.texture === 'bidireccional' || photo.type === 'lazo_guia') ? `url(#arrow-head-${photo.id})` : ''}
+                            markerStart={photo.texture === 'bidireccional' ? `url(#arrow-head-${photo.id})` : ''}
+                            className="pointer-events-none"
                         />
-                    ))}
-                </svg>
+                        {isEditMode && isSelected && !photo.isLocked && !isDrawingMode && localPoints.map((p, index) => (
+                            <g key={index} className="pointer-events-auto">
+                                <circle
+                                    cx={p.x} cy={p.y} r={10 * ((photo.baseWidth || photo.width) / localTransform.width)}
+                                    fill="#3b82f6" stroke="white" strokeWidth={2 * ((photo.baseWidth || photo.width) / localTransform.width)}
+                                    className="cursor-crosshair hover:fill-blue-400 opacity-90 transition-colors print:hidden"
+                                    onPointerDown={(e) => handlePointerDown('dragPoint', e, index)}
+                                />
+                                <text x={p.x + 12} y={p.y - 12} fill="#3b82f6" fontSize={14 * ((photo.baseWidth || photo.width) / localTransform.width)} fontWeight="bold" className="pointer-events-none select-none print:hidden">{index + 1}</text>
+                            </g>
+                        ))}
+                    </svg>
+                </div>
             )}
 
             {photo.type === 'postit' && (
@@ -249,14 +266,12 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                 </div>
             )}
 
-            {/* NUEVO: PEGATINA DE MÚSICA */}
             {photo.type === 'music' && (
                 <div style={dynamicStyle} className="px-6 py-4 rounded-2xl shadow-lg text-center flex items-center justify-center gap-3">
                     <Music size={20} /> <span className="truncate font-bold">{photo.content}</span>
                 </div>
             )}
 
-            {/* NUEVO: PEGATINA DE CONTADOR */}
             {photo.type === 'counter' && (
                 <div style={dynamicStyle} className="px-6 py-4 rounded-3xl shadow-lg flex items-center justify-center gap-4 border-b-4">
                     <span className="text-4xl font-black">{photo.url}</span>
@@ -270,12 +285,18 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                 </div>
             )}
 
-            {/* CONTROLES DE EDICIÓN FLOTANTES (Ocultos al imprimir) */}
-            {isEditMode && isSelected && (
-                <div className="print:hidden">
+            {photo.type === 'animated' && (
+                <div style={{ fontSize: `${localTransform.width * 0.8}px` }} className={`leading-none drop-shadow-xl select-none flex items-center justify-center transition-all duration-700 ${isTourPlaying ? (photo.animationStyle || 'animate-bounce') : ''}`}>
+                    {photo.content}
+                </div>
+            )}
+
+            {/* CONTROLES DE EDICIÓN FLOTANTES */}
+            {isEditMode && isSelected && !photo.isLocked && !isDrawingMode && (
+                <div className="print:hidden pointer-events-auto">
                     <div onPointerDown={(e) => handlePointerDown('rotate', e)} className="absolute -top-12 left-1/2 -translate-x-1/2 bg-white/95 p-2.5 rounded-full shadow-lg border border-stone-100 cursor-grab text-blue-500 hover:bg-blue-50 hover:scale-110 active:scale-95 transition-all z-50"><RotateCw size={18} strokeWidth={2.5} /></div>
 
-                    {(!photo.type || photo.type === 'image' || ['postit', 'date', 'link', 'location', 'lazo', 'drawing', 'music', 'counter'].includes(photo.type)) && (
+                    {(!photo.type || photo.type === 'image' || ['postit', 'date', 'link', 'location', 'lazo', 'lazo_guia', 'drawing', 'music', 'counter', 'animated'].includes(photo.type)) && (
                         <div onPointerDown={(e) => { e.stopPropagation(); onEditClick(photo); }} className="absolute -top-5 -left-5 bg-white/95 p-2.5 rounded-full shadow-lg border border-stone-100 cursor-pointer text-indigo-500 hover:bg-indigo-50 hover:scale-110 active:scale-95 transition-all z-50"><Edit2 size={18} strokeWidth={2.5} /></div>
                     )}
 
@@ -286,7 +307,7 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                 </div>
             )}
 
-            {isEditMode && !isSelected && (
+            {isEditMode && !isSelected && !photo.isLocked && !isDrawingMode && (
                 <div className="absolute inset-0 border-2 border-dashed border-blue-400/0 group-hover:border-blue-400/50 pointer-events-none rounded-sm transition-colors print:hidden"></div>
             )}
         </div>
