@@ -1,11 +1,35 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { RotateCw, Maximize2, Trash2, MessageSquareText, Calendar, Link as LinkIcon, MapPin, Edit2 } from 'lucide-react';
 
+export const getLazoPath = (pts, isSmooth) => {
+    if (!pts || pts.length === 0) return "";
+    if (pts.length === 1) return `M ${pts[0].x} ${pts[0].y}`;
+    if (!isSmooth || pts.length < 3) return `M ${pts.map(p => `${p.x},${p.y}`).join(' L ')}`;
+
+    let d = `M ${pts[0].x},${pts[0].y}`;
+    for (let i = 0; i < pts.length - 1; i++) {
+        const p0 = i > 0 ? pts[i - 1] : pts[0];
+        const p1 = pts[i];
+        const p2 = pts[i + 1];
+        const p3 = i !== pts.length - 2 ? pts[i + 2] : p2;
+
+        const cp1x = p1.x + (p2.x - p0.x) * 0.2;
+        const cp1y = p1.y + (p2.y - p0.y) * 0.2;
+        const cp2x = p2.x - (p3.x - p1.x) * 0.2;
+        const cp2y = p2.y - (p3.y - p1.y) * 0.2;
+
+        d += ` C ${cp1x},${cp1y} ${cp2x},${cp2y} ${p2.x},${p2.y}`;
+    }
+    return d;
+};
+
 export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isEditMode, isSelected, onSelect, onBringToFront, onClickView, onEditClick }) {
     const [interaction, setInteraction] = useState(null);
     const [localTransform, setLocalTransform] = useState({
         x: photo.x, y: photo.y, width: photo.width, rotation: photo.rotation
     });
+
+    const [localPoints, setLocalPoints] = useState(photo.points || []);
 
     const startState = useRef(null);
     const containerRef = useRef(null);
@@ -16,10 +40,11 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
     useEffect(() => {
         if (!interaction) {
             setLocalTransform({ x: photo.x, y: photo.y, width: photo.width, rotation: photo.rotation });
+            setLocalPoints(photo.points || []);
         }
-    }, [photo.x, photo.y, photo.width, photo.rotation, interaction]);
+    }, [photo, interaction]);
 
-    const handlePointerDown = (type, e) => {
+    const handlePointerDown = (type, e, pointIndex = null) => {
         if (!isEditMode) return;
         e.stopPropagation();
         e.preventDefault();
@@ -33,7 +58,9 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
             mouseX: e.clientX, mouseY: e.clientY,
             x: localTransform.x, y: localTransform.y,
             width: localTransform.width, rotation: localTransform.rotation,
-            centerX: 0, centerY: 0
+            centerX: 0, centerY: 0,
+            pointIndex: pointIndex,
+            originalPoint: pointIndex !== null && localPoints.length > 0 ? { ...localPoints[pointIndex] } : null
         };
 
         if (type === 'rotate' && containerRef.current) {
@@ -65,11 +92,29 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                 const angleDiff = (currentAngle - startAngle) * (180 / Math.PI);
                 setLocalTransform(prev => ({ ...prev, rotation: s.rotation + angleDiff }));
             }
+            else if (interaction === 'dragPoint' && s.pointIndex !== null) {
+                const scale = localTransform.width / (photo.baseWidth || photo.width || 1);
+                const angleRad = -localTransform.rotation * (Math.PI / 180);
+
+                const rotDx = dx * Math.cos(angleRad) - dy * Math.sin(angleRad);
+                const rotDy = dx * Math.sin(angleRad) + dy * Math.cos(angleRad);
+
+                const newX = s.originalPoint.x + (rotDx / scale);
+                const newY = s.originalPoint.y + (rotDy / scale);
+
+                const newPoints = [...localPoints];
+                newPoints[s.pointIndex] = { x: newX, y: newY };
+                setLocalPoints(newPoints);
+            }
         };
 
         const handlePointerUp = () => {
             setInteraction(null);
-            updatePhoto(photo.id, transformRef.current);
+            if (interaction === 'dragPoint') {
+                updatePhoto(photo.id, { points: localPoints });
+            } else {
+                updatePhoto(photo.id, transformRef.current);
+            }
         };
 
         window.addEventListener('pointermove', handlePointerMove);
@@ -79,7 +124,7 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
             window.removeEventListener('pointermove', handlePointerMove);
             window.removeEventListener('pointerup', handlePointerUp);
         };
-    }, [interaction, photo.id, updatePhoto]);
+    }, [interaction, photo.id, updatePhoto, localPoints, localTransform, photo.baseWidth, photo.width]);
 
     const dynamicStyle = {
         backgroundColor: photo.bgColor || '#ffffff',
@@ -113,6 +158,7 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                 }
             }}
         >
+            {/* FOTOGRAFÍA */}
             {(!photo.type || photo.type === 'image') && (
                 <div style={{ backgroundColor: frameColor }} className={`p-3 pb-12 rounded-sm border relative transition-all duration-300 ${isEditMode && interaction === 'drag' ? 'border-amber-300 shadow-2xl scale-105' : 'border-stone-200 shadow-xl group-hover:shadow-2xl'}`}>
                     {tapeStyle === 'top' && <div className="absolute -top-3 left-1/2 -translate-x-1/2 w-16 h-6 bg-white/40 backdrop-blur-md border border-white/40 shadow-sm rounded-sm transform rotate-2 z-10 opacity-80" style={{ backgroundImage: tapeGradient }}></div>}
@@ -135,15 +181,23 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                 </div>
             )}
 
+            {/* DIBUJO LIBRE (NUEVO) */}
+            {photo.type === 'drawing' && (
+                <div className="relative">
+                    <img src={photo.src} alt="Dibujo Libre" className="w-full h-auto drop-shadow-md pointer-events-none select-none" draggable="false" />
+                </div>
+            )}
+
+            {/* LAZO / CONECTOR */}
             {photo.type === 'lazo' && (
-                <svg viewBox={`0 0 ${photo.baseWidth || photo.width} ${photo.baseHeight || photo.height}`} width="100%" height="100%" className="overflow-visible drop-shadow-md pointer-events-none">
+                <svg viewBox={`0 0 ${photo.baseWidth || photo.width} ${photo.baseHeight || photo.height}`} width="100%" height="100%" className="overflow-visible drop-shadow-md">
                     <defs>
                         <marker id={`arrow-head-${photo.id}`} markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto-start-reverse">
-                            <path d="M 0 0 L 6 3 L 0 6 z" fill={photo.color} />
+                            <path d="M 0 0 L 6 3 L 0 6 z" fill={photo.color || '#1f2937'} />
                         </marker>
                     </defs>
-                    <polyline
-                        points={photo.points.map(p => `${p.x},${p.y}`).join(' ')}
+                    <path
+                        d={getLazoPath(localPoints, photo.isSmooth)}
                         fill="none"
                         stroke={photo.color || '#1f2937'}
                         strokeWidth={photo.thickness || (photo.texture === 'estambre' ? 8 : photo.texture === 'hilo' ? 3 : 4)}
@@ -152,7 +206,19 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                         strokeLinejoin="round"
                         markerEnd={(photo.texture === 'flecha' || photo.texture === 'bidireccional') ? `url(#arrow-head-${photo.id})` : ''}
                         markerStart={photo.texture === 'bidireccional' ? `url(#arrow-head-${photo.id})` : ''}
+                        className="pointer-events-none"
                     />
+                    {isEditMode && isSelected && localPoints.map((p, index) => (
+                        <circle
+                            key={index}
+                            cx={p.x} cy={p.y} r={10 * ((photo.baseWidth || photo.width) / localTransform.width)}
+                            fill="#3b82f6"
+                            stroke="white"
+                            strokeWidth={2 * ((photo.baseWidth || photo.width) / localTransform.width)}
+                            className="cursor-crosshair pointer-events-auto hover:fill-blue-400 opacity-90 transition-colors"
+                            onPointerDown={(e) => handlePointerDown('dragPoint', e, index)}
+                        />
+                    ))}
                 </svg>
             )}
 
@@ -191,7 +257,7 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                 <>
                     <div onPointerDown={(e) => handlePointerDown('rotate', e)} className="absolute -top-12 left-1/2 -translate-x-1/2 bg-white/95 p-2.5 rounded-full shadow-lg border border-stone-100 cursor-grab text-blue-500 hover:bg-blue-50 hover:scale-110 active:scale-95 transition-all z-50"><RotateCw size={18} strokeWidth={2.5} /></div>
 
-                    {(!photo.type || photo.type === 'image' || ['postit', 'date', 'link', 'location', 'lazo'].includes(photo.type)) && (
+                    {(!photo.type || photo.type === 'image' || ['postit', 'date', 'link', 'location', 'lazo', 'drawing'].includes(photo.type)) && (
                         <div onPointerDown={(e) => { e.stopPropagation(); onEditClick(photo); }} className="absolute -top-5 -left-5 bg-white/95 p-2.5 rounded-full shadow-lg border border-stone-100 cursor-pointer text-indigo-500 hover:bg-indigo-50 hover:scale-110 active:scale-95 transition-all z-50"><Edit2 size={18} strokeWidth={2.5} /></div>
                     )}
 
