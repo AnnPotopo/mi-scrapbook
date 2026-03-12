@@ -23,10 +23,10 @@ const getLazoPath = (pts, isSmooth) => {
     return d;
 };
 
-export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isEditMode, isSelected, onSelect, onBringToFront, onClickView, onEditClick, zoom = 1, isTourPlaying = false, isDrawingMode = false }) {
+export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isEditMode, isSelected, onSelect, onBringToFront, onClickView, onEditClick, zoom = 1, isTourPlaying = false, isDrawingMode = false, onGroupDragStart = null }) {
     const [interaction, setInteraction] = useState(null);
     const [localTransform, setLocalTransform] = useState({
-        x: photo.x, y: photo.y, width: photo.width, rotation: photo.rotation
+        x: photo.x, y: photo.y, width: photo.width, height: photo.height, rotation: photo.rotation
     });
 
     const [localPoints, setLocalPoints] = useState(photo.points || []);
@@ -39,7 +39,7 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
 
     useEffect(() => {
         if (!interaction) {
-            setLocalTransform({ x: photo.x, y: photo.y, width: photo.width, rotation: photo.rotation });
+            setLocalTransform({ x: photo.x, y: photo.y, width: photo.width, height: photo.height, rotation: photo.rotation });
             setLocalPoints(photo.points || []);
         }
     }, [photo, interaction]);
@@ -57,7 +57,9 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
         startState.current = {
             mouseX: e.clientX, mouseY: e.clientY,
             x: localTransform.x, y: localTransform.y,
-            width: localTransform.width, rotation: localTransform.rotation,
+            width: localTransform.width,
+            height: localTransform.height || containerRef.current?.offsetHeight || 100,
+            rotation: localTransform.rotation,
             centerX: 0, centerY: 0,
             pointIndex: pointIndex,
             originalPoint: pointIndex !== null && localPoints.length > 0 ? { ...localPoints[pointIndex] } : null
@@ -82,9 +84,14 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                 setLocalTransform(prev => ({ ...prev, x: s.x + dx, y: s.y + dy }));
             }
             else if (interaction === 'resize') {
-                const moveAvg = (dx + dy) / 2;
-                const newWidth = Math.max(50, s.width + moveAvg);
-                setLocalTransform(prev => ({ ...prev, width: newWidth }));
+                const angleRad = s.rotation * (Math.PI / 180);
+                const localDx = dx * Math.cos(angleRad) + dy * Math.sin(angleRad);
+                const localDy = -dx * Math.sin(angleRad) + dy * Math.cos(angleRad);
+
+                const newWidth = Math.max(50, s.width + localDx);
+                const newHeight = Math.max(30, s.height + localDy);
+
+                setLocalTransform(prev => ({ ...prev, width: newWidth, height: newHeight }));
             }
             else if (interaction === 'rotate') {
                 const currentAngle = Math.atan2(e.clientY - s.centerY, e.clientX - s.centerX);
@@ -119,7 +126,11 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
             if (interaction === 'dragPoint') {
                 updatePhoto(photo.id, { points: localPoints });
             } else {
-                updatePhoto(photo.id, transformRef.current);
+                const payload = { ...transformRef.current };
+                Object.keys(payload).forEach(key => {
+                    if (payload[key] === undefined) delete payload[key];
+                });
+                updatePhoto(photo.id, payload);
             }
         };
 
@@ -139,7 +150,8 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
         fontWeight: photo.isBold ? 'bold' : 'normal',
         fontStyle: photo.isItalic ? 'italic' : 'normal',
         borderWidth: photo.borderColor ? '2px' : '0px',
-        borderStyle: 'solid'
+        borderStyle: 'solid',
+        fontSize: photo.fontSize ? `${photo.fontSize}px` : undefined
     };
 
     const isLinkable = (photo.type === 'link' || photo.type === 'location' || photo.type === 'music') && photo.url;
@@ -147,36 +159,41 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
     const tapeStyle = photo.tapeStyle || 'top';
     const tapeGradient = 'linear-gradient(to right, rgba(255,255,255,0.1), rgba(255,255,255,0.6))';
 
-    // MAGIA DE BLOQUEO Y CUBIERTA FANTASMA
     let interactionEvents = 'auto';
-    if (isDrawingMode) {
-        interactionEvents = 'none'; // Mientras dibujas un lazo, atraviesas todo
-    } else if (isEditMode && photo.isLocked) {
-        interactionEvents = 'none'; // Si está bloqueado en edición, lo atraviesas
-    } else if (!isEditMode && ['lazo', 'lazo_guia', 'drawing'].includes(photo.type)) {
-        // SOLUCIÓN: Fuera del modo edición, las "cajas invisibles" de los lazos y dibujos
-        // se vuelven intangibles para que puedas hacer clic a las fotos debajo de ellos.
-        interactionEvents = 'none';
-    }
+    if (isDrawingMode) interactionEvents = 'none';
+    else if (isEditMode && photo.isLocked) interactionEvents = 'none';
+    else if (!isEditMode && ['lazo', 'lazo_guia', 'drawing'].includes(photo.type)) interactionEvents = 'none';
 
     const lockedClass = photo.isLocked && isEditMode ? 'opacity-90' : '';
+
+    const customAnimStyle = photo.type === 'custom_sticker' && photo.animType && photo.animType !== 'none'
+        ? { animation: `anim-${photo.animType} ${photo.animDuration || 3}s ${photo.animType === 'spin' ? 'linear' : 'ease-in-out'} ${photo.animDirection || 'alternate'} infinite` }
+        : {};
 
     return (
         <div
             ref={containerRef}
             style={{
                 position: 'absolute', left: `${localTransform.x}px`, top: `${localTransform.y}px`,
-                width: `${localTransform.width}px`, transform: `rotate(${localTransform.rotation}deg)`,
+                width: `${localTransform.width}px`,
+                height: localTransform.height ? `${localTransform.height}px` : 'auto',
+                transform: `rotate(${localTransform.rotation}deg)`,
                 zIndex: photo.zIndex || 1, touchAction: 'none',
-                pointerEvents: interactionEvents // Se aplica la regla de intangibilidad
+                pointerEvents: interactionEvents
             }}
-            className={`group ${isEditMode && !photo.isLocked && !isDrawingMode ? 'cursor-move' : ''} ${!isEditMode && isLinkable ? 'cursor-pointer hover:scale-105 active:scale-95 transition-all duration-200' : (!isEditMode && (!photo.type || photo.type === 'image') ? 'cursor-pointer hover:scale-[1.02] transition-transform duration-300' : '')} ${lockedClass}`}
+            className={`group flex flex-col ${isEditMode && !photo.isLocked && !isDrawingMode && !onGroupDragStart ? 'cursor-move' : (onGroupDragStart ? 'cursor-move' : '')} ${!isEditMode && isLinkable ? 'cursor-pointer hover:scale-105 active:scale-95 transition-all duration-200' : (!isEditMode && (!photo.type || photo.type === 'image') ? 'cursor-pointer hover:scale-[1.02] transition-transform duration-300' : '')} ${lockedClass}`}
             onPointerDown={(e) => {
-                // Previene interacción extra si las reglas de CSS fallaran
                 if (photo.isLocked || isDrawingMode || interactionEvents === 'none') return;
 
-                if (isEditMode) handlePointerDown('drag', e);
-                else {
+                if (isEditMode) {
+                    if (onGroupDragStart) {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        onGroupDragStart(e);
+                    } else {
+                        handlePointerDown('drag', e);
+                    }
+                } else {
                     if (isLinkable) window.open(photo.url, '_blank', 'noopener,noreferrer');
                     else if (!photo.type || photo.type === 'image') onClickView(photo);
                 }
@@ -188,9 +205,8 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                 </div>
             )}
 
-            {/* FOTOGRAFÍA */}
             {(!photo.type || photo.type === 'image') && (
-                <div style={{ backgroundColor: frameColor }} className={`p-3 pb-12 rounded-sm border relative transition-all duration-300 ${isEditMode && interaction === 'drag' ? 'border-amber-300 shadow-2xl scale-105' : 'border-stone-200 shadow-xl group-hover:shadow-2xl'}`}>
+                <div style={{ backgroundColor: frameColor }} className={`w-full h-full p-3 pb-12 rounded-sm border relative flex flex-col transition-all duration-300 ${isEditMode && interaction === 'drag' ? 'border-amber-300 shadow-2xl scale-105' : 'border-stone-200 shadow-xl group-hover:shadow-2xl'}`}>
                     {tapeStyle === 'top' && <div className="absolute -top-3 left-1/2 -translate-x-1/2 w-16 h-6 bg-white/40 backdrop-blur-md border border-white/40 shadow-sm rounded-sm transform rotate-2 z-10 opacity-80 print:opacity-100" style={{ backgroundImage: tapeGradient }}></div>}
                     {tapeStyle === 'corners' && (
                         <>
@@ -200,7 +216,9 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                             <div className="absolute -bottom-2 -right-3 w-10 h-5 bg-white/40 backdrop-blur-md shadow-sm rounded-sm transform -rotate-45 z-10 opacity-80 print:opacity-100" style={{ backgroundImage: tapeGradient }}></div>
                         </>
                     )}
-                    <img src={photo.src} alt="Álbum" className="w-full h-auto object-cover pointer-events-none rounded-sm border border-black/10 shadow-inner" draggable="false" />
+                    <div className="flex-1 w-full min-h-[50px] relative overflow-hidden rounded-sm border border-black/10 shadow-inner pointer-events-none">
+                        <img src={photo.src} alt="Álbum" className="absolute inset-0 w-full h-full object-cover" draggable="false" />
+                    </div>
                     {!isEditMode && photo.description && (
                         <div className="absolute bottom-3 left-0 w-full flex justify-center text-stone-500 print:hidden pointer-events-none">
                             <div className="flex items-center gap-1.5 bg-white/80 px-3 py-1 rounded-full text-xs font-serif italic backdrop-blur-sm shadow-sm border border-stone-200/50">
@@ -213,17 +231,16 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
 
             {photo.type === 'custom_sticker' && (
                 <div className="relative w-full h-full flex items-center justify-center pointer-events-none">
-                    <img src={photo.src} alt="Sticker" style={customAnimStyle} className="w-full h-auto drop-shadow-lg object-contain pointer-events-none select-none" draggable="false" />
+                    <img src={photo.src} alt="Sticker" style={customAnimStyle} className="w-full h-full drop-shadow-lg object-contain pointer-events-none select-none" draggable="false" />
                 </div>
             )}
 
             {photo.type === 'drawing' && (
-                <div className="relative pointer-events-none">
-                    <img src={photo.src} alt="Dibujo Libre" className="w-full h-auto drop-shadow-md pointer-events-none select-none" draggable="false" />
+                <div className="relative w-full h-full pointer-events-none">
+                    <img src={photo.src} alt="Dibujo Libre" className="w-full h-full object-fill drop-shadow-md pointer-events-none select-none" draggable="false" />
                 </div>
             )}
 
-            {/* LAZO Y LAZO GUÍA */}
             {(photo.type === 'lazo' || photo.type === 'lazo_guia') && (
                 <div className="relative w-full h-full overflow-visible pointer-events-none">
                     {isEditMode && photo.type === 'lazo_guia' && (
@@ -249,8 +266,7 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                             markerStart={photo.texture === 'bidireccional' ? `url(#arrow-head-${photo.id})` : ''}
                             className="pointer-events-none"
                         />
-                        {/* Habilitamos los clics SOLO en los puntitos para poder editarlos */}
-                        {isEditMode && isSelected && !photo.isLocked && !isDrawingMode && localPoints.map((p, index) => (
+                        {isEditMode && isSelected && !photo.isLocked && !isDrawingMode && !onGroupDragStart && localPoints.map((p, index) => (
                             <g key={index} className="pointer-events-auto">
                                 <circle
                                     cx={p.x} cy={p.y} r={10 * ((photo.baseWidth || photo.width) / localTransform.width)}
@@ -266,57 +282,56 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
             )}
 
             {photo.type === 'postit' && (
-                <div style={{ ...dynamicStyle, minHeight: '150px' }} className={`p-6 shadow-md font-serif text-xl border-t border-l relative transition-all duration-300 ${isEditMode && interaction === 'drag' ? 'scale-105 shadow-xl' : 'hover:shadow-lg'}`}>
+                <div style={dynamicStyle} className={`w-full h-full min-h-[150px] p-6 shadow-md font-serif border-t border-l relative transition-all duration-300 overflow-hidden ${isEditMode && interaction === 'drag' ? 'scale-105 shadow-xl' : 'hover:shadow-lg'}`}>
                     <div className="absolute -top-3 left-1/2 -translate-x-1/2 w-14 h-5 bg-white/30 backdrop-blur-sm shadow-sm rounded-sm transform -rotate-2 z-10 opacity-70 print:opacity-100"></div>
                     {photo.content}
                 </div>
             )}
 
             {photo.type === 'date' && (
-                <div style={dynamicStyle} className="px-6 py-3 rounded-full shadow-md whitespace-nowrap flex items-center justify-center gap-2">
-                    <Calendar size={18} /> {photo.content}
+                <div style={dynamicStyle} className="w-full h-full px-6 py-3 rounded-full shadow-md whitespace-nowrap flex items-center justify-center gap-3">
+                    <Calendar size="1.2em" className="shrink-0" /> <span className="truncate">{photo.content}</span>
                 </div>
             )}
 
             {photo.type === 'link' && (
-                <div style={dynamicStyle} className="px-6 py-4 rounded-2xl shadow-lg text-center flex items-center justify-center gap-3">
-                    <LinkIcon size={20} /> <span className="truncate">{photo.content}</span>
+                <div style={dynamicStyle} className="w-full h-full px-6 py-4 rounded-2xl shadow-lg text-center flex items-center justify-center gap-3">
+                    <LinkIcon size="1.2em" className="shrink-0" /> <span className="truncate">{photo.content}</span>
                 </div>
             )}
 
             {photo.type === 'location' && (
-                <div style={dynamicStyle} className="px-6 py-3 rounded-full shadow-lg whitespace-nowrap flex items-center justify-center gap-2">
-                    <MapPin size={18} /> {photo.content}
+                <div style={dynamicStyle} className="w-full h-full px-6 py-3 rounded-full shadow-lg whitespace-nowrap flex items-center justify-center gap-3">
+                    <MapPin size="1.2em" className="shrink-0" /> <span className="truncate">{photo.content}</span>
                 </div>
             )}
 
             {photo.type === 'music' && (
-                <div style={dynamicStyle} className="px-6 py-4 rounded-2xl shadow-lg text-center flex items-center justify-center gap-3">
-                    <Music size={20} /> <span className="truncate font-bold">{photo.content}</span>
+                <div style={dynamicStyle} className="w-full h-full px-6 py-4 rounded-2xl shadow-lg text-center flex items-center justify-center gap-3">
+                    <Music size="1.2em" className="shrink-0" /> <span className="truncate font-bold">{photo.content}</span>
                 </div>
             )}
 
             {photo.type === 'counter' && (
-                <div style={dynamicStyle} className="px-6 py-4 rounded-3xl shadow-lg flex items-center justify-center gap-4 border-b-4">
-                    <span className="text-4xl font-black">{photo.url}</span>
-                    <span className="text-sm uppercase tracking-widest font-bold opacity-80 leading-tight w-min text-left">{photo.content}</span>
+                <div style={dynamicStyle} className="w-full h-full px-6 py-4 rounded-3xl shadow-lg flex items-center justify-center gap-4 border-b-4">
+                    <span style={{ fontSize: photo.fontSize ? `${photo.fontSize * 2}px` : '2.25rem' }} className="font-black leading-none">{photo.url}</span>
+                    <span className="uppercase tracking-widest font-bold opacity-80 leading-tight w-min text-left">{photo.content}</span>
                 </div>
             )}
 
             {photo.type === 'emoji' && (
-                <div style={{ fontSize: `${localTransform.width * 0.8}px` }} className="leading-none drop-shadow-xl select-none flex items-center justify-center">
+                <div style={{ fontSize: photo.fontSize ? `${photo.fontSize}px` : `${localTransform.width * 0.8}px` }} className="w-full h-full leading-none drop-shadow-xl select-none flex items-center justify-center">
                     {photo.content}
                 </div>
             )}
 
             {photo.type === 'animated' && (
-                <div style={{ fontSize: `${localTransform.width * 0.8}px` }} className={`leading-none drop-shadow-xl select-none flex items-center justify-center transition-all duration-700 ${isTourPlaying ? (photo.animationStyle || 'animate-bounce') : ''}`}>
+                <div style={{ fontSize: photo.fontSize ? `${photo.fontSize}px` : `${localTransform.width * 0.8}px` }} className={`w-full h-full leading-none drop-shadow-xl select-none flex items-center justify-center transition-all duration-700 ${isTourPlaying ? (photo.animationStyle || 'animate-bounce') : ''}`}>
                     {photo.content}
                 </div>
             )}
 
-            {/* CONTROLES DE EDICIÓN FLOTANTES */}
-            {isEditMode && isSelected && !photo.isLocked && !isDrawingMode && (
+            {isEditMode && isSelected && !photo.isLocked && !isDrawingMode && !onGroupDragStart && (
                 <div className="print:hidden pointer-events-auto">
                     <div onPointerDown={(e) => handlePointerDown('rotate', e)} className="absolute -top-12 left-1/2 -translate-x-1/2 bg-white/95 p-2.5 rounded-full shadow-lg border border-stone-100 cursor-grab text-blue-500 hover:bg-blue-50 hover:scale-110 active:scale-95 transition-all z-50"><RotateCw size={18} strokeWidth={2.5} /></div>
 
@@ -325,13 +340,14 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                     )}
 
                     <div onPointerDown={(e) => handlePointerDown('resize', e)} className="absolute -bottom-5 -right-5 bg-white/95 p-2.5 rounded-full shadow-lg border border-stone-100 cursor-nwse-resize text-emerald-500 hover:bg-emerald-50 hover:scale-110 active:scale-95 transition-all z-50"><Maximize2 size={18} strokeWidth={2.5} /></div>
+
                     <div onPointerDown={(e) => { e.stopPropagation(); deletePhoto(photo.id); }} className="absolute -top-5 -right-5 bg-white/95 p-2.5 rounded-full shadow-lg border border-stone-100 cursor-pointer text-rose-500 hover:bg-rose-50 hover:scale-110 active:scale-95 transition-all z-50"><Trash2 size={18} strokeWidth={2.5} /></div>
 
                     <div className="absolute inset-0 border-2 border-dashed border-blue-500/80 pointer-events-none rounded-sm"></div>
                 </div>
             )}
 
-            {isEditMode && !isSelected && !photo.isLocked && !isDrawingMode && (
+            {isEditMode && !isSelected && !photo.isLocked && !isDrawingMode && !onGroupDragStart && (
                 <div className="absolute inset-0 border-2 border-dashed border-blue-400/0 group-hover:border-blue-400/50 pointer-events-none rounded-sm transition-colors print:hidden"></div>
             )}
         </div>

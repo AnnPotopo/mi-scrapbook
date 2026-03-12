@@ -3,7 +3,7 @@ import { collection, doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { db, appId } from '../firebase';
 import { compressImage } from '../utils';
 import InteractablePhoto from './InteractablePhoto';
-import { ArrowLeft, Layers, SmilePlus, ImagePlus, Check, Edit3, X, StickyNote, Calendar, Link as LinkIcon, Loader2, Trash2, ChevronUp, MessageSquareText, MapPin, Edit2, Palette, PenTool, Brush, Music, Hash, Printer, ZoomIn, ZoomOut, Play, Pause, Square, Navigation, Lock, Unlock, Folder, FolderPlus, UploadCloud } from 'lucide-react';
+import { ArrowLeft, Layers, SmilePlus, ImagePlus, Check, Edit3, X, StickyNote, Calendar, Link as LinkIcon, Loader2, Trash2, ChevronUp, MessageSquareText, MapPin, Edit2, Palette, PenTool, Brush, Music, Hash, Printer, ZoomIn, ZoomOut, Play, Pause, Square, Navigation, Lock, Unlock, Folder, FolderPlus, UploadCloud, RotateCw, Maximize2, Eye, EyeOff } from 'lucide-react';
 
 const CANVAS_BACKGROUNDS = {
     dots: { name: 'Puntos Clásicos', className: 'bg-[#f7f5f0] bg-[radial-gradient(#d1cfc7_2px,transparent_2px)] [background-size:32px_32px]' },
@@ -47,6 +47,214 @@ const CustomAnimations = () => (
     </style>
 );
 
+// MOTOR DE AGRUPACIÓN
+function InteractableGroup({ folder, items, updateMultiplePhotos, isEditMode, isSelected, onSelect, onBringToFront, zoom, isLocked }) {
+    const getItemsBoundingBox = (groupItems) => {
+        if (!groupItems || groupItems.length === 0) return { x: 0, y: 0, width: 100, height: 100 };
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        groupItems.forEach(item => {
+            const w = item.width || 100;
+            const h = item.height || w;
+            const cx = item.x + w / 2;
+            const cy = item.y + h / 2;
+            const rad = (item.rotation || 0) * Math.PI / 180;
+            const cos = Math.cos(rad);
+            const sin = Math.sin(rad);
+            const corners = [
+                { dx: -w / 2, dy: -h / 2 }, { dx: w / 2, dy: -h / 2 },
+                { dx: -w / 2, dy: h / 2 }, { dx: w / 2, dy: h / 2 }
+            ];
+            corners.forEach(c => {
+                const px = cx + c.dx * cos - c.dy * sin;
+                const py = cy + c.dx * sin + c.dy * cos;
+                if (px < minX) minX = px;
+                if (py < minY) minY = py;
+                if (px > maxX) maxX = px;
+                if (py > maxY) maxY = py;
+            });
+        });
+        return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+    };
+
+    const [interaction, setInteraction] = useState(null);
+    const [localTransform, setLocalTransform] = useState(() => ({ ...getItemsBoundingBox(items), rotation: 0 }));
+
+    const isInteracting = useRef(false);
+    const startState = useRef(null);
+    const containerRef = useRef(null);
+
+    useEffect(() => {
+        if (!isInteracting.current) {
+            setLocalTransform({ ...getItemsBoundingBox(items), rotation: 0 });
+        }
+    }, [items]);
+
+    const handlePointerDown = (type, e) => {
+        if (!isEditMode || isLocked) return;
+        e.stopPropagation();
+        e.preventDefault();
+        onBringToFront();
+        onSelect();
+
+        isInteracting.current = true;
+        setInteraction(type);
+
+        startState.current = {
+            mouseX: e.clientX, mouseY: e.clientY,
+            x: localTransform.x, y: localTransform.y,
+            width: localTransform.width, height: localTransform.height,
+            rotation: localTransform.rotation,
+            bbox: { ...localTransform },
+            items: JSON.parse(JSON.stringify(items)),
+            centerX: 0, centerY: 0
+        };
+
+        if (type === 'rotate' && containerRef.current) {
+            const rect = containerRef.current.getBoundingClientRect();
+            startState.current.centerX = rect.left + rect.width / 2;
+            startState.current.centerY = rect.top + rect.height / 2;
+        }
+    };
+
+    useEffect(() => {
+        if (!interaction) return;
+
+        const handlePointerMove = (e) => {
+            const s = startState.current;
+            const dx = (e.clientX - s.mouseX) / zoom;
+            const dy = (e.clientY - s.mouseY) / zoom;
+
+            if (interaction === 'drag') {
+                setLocalTransform(prev => ({ ...prev, x: s.x + dx, y: s.y + dy }));
+            } else if (interaction === 'resize') {
+                const angleRad = s.rotation * (Math.PI / 180);
+                const localDx = dx * Math.cos(angleRad) + dy * Math.sin(angleRad);
+                const localDy = -dx * Math.sin(angleRad) + dy * Math.cos(angleRad);
+                const newWidth = Math.max(50, s.width + localDx);
+                const newHeight = Math.max(50, s.height + localDy);
+                setLocalTransform(prev => ({ ...prev, width: newWidth, height: newHeight }));
+            } else if (interaction === 'rotate') {
+                const currentAngle = Math.atan2(e.clientY - s.centerY, e.clientX - s.centerX);
+                const startAngle = Math.atan2(s.mouseY - s.centerY, s.mouseX - s.centerX);
+                const angleDiff = (currentAngle - startAngle) * (180 / Math.PI);
+                let newRot = s.rotation + angleDiff;
+                if (e.shiftKey) newRot = Math.round(newRot / 45) * 45;
+                setLocalTransform(prev => ({ ...prev, rotation: newRot }));
+            }
+        };
+
+        const handlePointerUp = () => {
+            setInteraction(null);
+            isInteracting.current = false;
+
+            const sBbox = startState.current.bbox;
+            const scaleX = localTransform.width / sBbox.width;
+            const scaleY = localTransform.height / sBbox.height;
+            const dRot = localTransform.rotation;
+
+            const updates = startState.current.items.map(sItem => {
+                const iw = sItem.width || 100;
+                const ih = sItem.height || iw;
+                const icx = sItem.x + iw / 2;
+                const icy = sItem.y + ih / 2;
+                const bcx = sBbox.x + sBbox.width / 2;
+                const bcy = sBbox.y + sBbox.height / 2;
+
+                const sdx = (icx - bcx) * scaleX;
+                const sdy = (icy - bcy) * scaleY;
+                const rad = dRot * Math.PI / 180;
+                const rdx = sdx * Math.cos(rad) - sdy * Math.sin(rad);
+                const rdy = sdx * Math.sin(rad) + sdy * Math.cos(rad);
+
+                const n_icx = localTransform.x + localTransform.width / 2 + rdx;
+                const n_icy = localTransform.y + localTransform.height / 2 + rdy;
+                const n_w = iw * scaleX;
+                const n_h = ih * scaleY;
+
+                return {
+                    id: sItem.id,
+                    data: {
+                        x: n_icx - n_w / 2,
+                        y: n_icy - n_h / 2,
+                        width: n_w,
+                        height: n_h,
+                        rotation: (sItem.rotation || 0) + dRot
+                    }
+                };
+            });
+            updateMultiplePhotos(updates);
+        };
+
+        window.addEventListener('pointermove', handlePointerMove);
+        window.addEventListener('pointerup', handlePointerUp);
+        return () => {
+            window.removeEventListener('pointermove', handlePointerMove);
+            window.removeEventListener('pointerup', handlePointerUp);
+        };
+    }, [interaction, localTransform, zoom, updateMultiplePhotos]);
+
+    const localItems = items.map(item => {
+        if (!isInteracting.current || !startState.current) return item;
+        const sItem = startState.current.items.find(i => i.id === item.id);
+        const sBbox = startState.current.bbox;
+        const scaleX = localTransform.width / sBbox.width;
+        const scaleY = localTransform.height / sBbox.height;
+        const dRot = localTransform.rotation;
+
+        const iw = sItem.width || 100;
+        const ih = sItem.height || iw;
+        const icx = sItem.x + iw / 2;
+        const icy = sItem.y + ih / 2;
+        const bcx = sBbox.x + sBbox.width / 2;
+        const bcy = sBbox.y + sBbox.height / 2;
+
+        const sdx = (icx - bcx) * scaleX;
+        const sdy = (icy - bcy) * scaleY;
+        const rad = dRot * Math.PI / 180;
+        const rdx = sdx * Math.cos(rad) - sdy * Math.sin(rad);
+        const rdy = sdx * Math.sin(rad) + sdy * Math.cos(rad);
+
+        const n_icx = localTransform.x + localTransform.width / 2 + rdx;
+        const n_icy = localTransform.y + localTransform.height / 2 + rdy;
+        const n_w = iw * scaleX;
+        const n_h = ih * scaleY;
+
+        return { ...item, x: n_icx - n_w / 2, y: n_icy - n_h / 2, width: n_w, height: n_h, rotation: (sItem.rotation || 0) + dRot };
+    });
+
+    const maxZ = Math.max(...items.map(i => i.zIndex || 0), 1);
+
+    return (
+        <>
+            {localItems.map(item => (
+                <InteractablePhoto
+                    key={item.id} photo={{ ...item, isLocked: item.isLocked || isLocked }}
+                    isEditMode={isEditMode} isSelected={false}
+                    onSelect={onSelect}
+                    onBringToFront={() => { }}
+                    onGroupDragStart={isLocked ? null : (e) => handlePointerDown('drag', e)}
+                    updatePhoto={() => { }} deletePhoto={() => { }}
+                    zoom={zoom}
+                />
+            ))}
+
+            {isSelected && isEditMode && items.length > 0 && !isLocked && (
+                <div
+                    ref={containerRef}
+                    style={{ position: 'absolute', left: localTransform.x, top: localTransform.y, width: localTransform.width, height: localTransform.height, transform: `rotate(${localTransform.rotation}deg)`, zIndex: maxZ + 1 }}
+                    className="border-2 border-dashed border-indigo-500 bg-indigo-500/5 pointer-events-none"
+                >
+                    <div className="absolute -top-6 left-1/2 -translate-x-1/2 bg-indigo-600 text-white text-[10px] font-bold px-3 py-1 rounded-full whitespace-nowrap shadow-md pointer-events-none">{folder.content}</div>
+                    <div className="pointer-events-auto">
+                        <div onPointerDown={(e) => handlePointerDown('rotate', e)} className="absolute -top-10 left-1/2 -translate-x-1/2 bg-white/95 p-2 rounded-full shadow-lg border border-indigo-200 cursor-grab text-indigo-600 hover:bg-indigo-50 hover:scale-110 active:scale-95 transition-all"><RotateCw size={16} strokeWidth={3} /></div>
+                        <div onPointerDown={(e) => handlePointerDown('resize', e)} className="absolute -bottom-4 -right-4 bg-white/95 p-2 rounded-full shadow-lg border border-indigo-200 cursor-nwse-resize text-indigo-600 hover:bg-indigo-50 hover:scale-110 active:scale-95 transition-all"><Maximize2 size={16} strokeWidth={3} /></div>
+                    </div>
+                </div>
+            )}
+        </>
+    );
+}
+
 export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCurrentView, setActiveAlbumId, setDbError }) {
     const [isEditMode, setIsEditMode] = useState(false);
     const [isUploading, setIsUploading] = useState(false);
@@ -61,7 +269,10 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
     const [drawingLazoType, setDrawingLazoType] = useState(null);
     const [lazoPoints, setLazoPoints] = useState([]);
 
-    const [selectedItemId, setSelectedItemId] = useState(null);
+    // ESTADOS PARA SELECCIÓN MÚLTIPLE Y CAJA
+    const [selectedItemIds, setSelectedItemIds] = useState([]);
+    const [selectionBox, setSelectionBox] = useState(null);
+
     const [editingStickerId, setEditingStickerId] = useState(null);
     const [stickerModalType, setStickerModalType] = useState(null);
     const [stickerInputText, setStickerInputText] = useState("");
@@ -74,7 +285,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
     const [stickerIsBold, setStickerIsBold] = useState(false);
     const [stickerIsItalic, setStickerIsItalic] = useState(false);
 
-    // NUEVO: Estado para la Rotación en el Modal
+    const [stickerFontSize, setStickerFontSize] = useState(16);
     const [stickerRotation, setStickerRotation] = useState(0);
 
     const [photoDescText, setPhotoDescText] = useState("");
@@ -112,14 +323,100 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
     const drawingCanvasRef = useRef(null);
     const [isDrawingCanvas, setIsDrawingCanvas] = useState(false);
 
+    const itemsRef = useRef([]);
+    const foldersRef = useRef([]);
+
     const activeBgId = activeAlbum?.canvasBg || 'dots';
     const bgClass = CANVAS_BACKGROUNDS[activeBgId]?.className || CANVAS_BACKGROUNDS.dots.className;
     const btnClass = "hover:scale-105 active:scale-95 transition-all duration-200 cursor-pointer shadow-sm font-medium flex items-center gap-2 px-5 py-3.5 rounded-2xl";
+
+    const folders = activePhotos.filter(p => p.type === 'folder').sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    const items = activePhotos.filter(p => p.type !== 'folder').sort((a, b) => (b.zIndex || 0) - (a.zIndex || 0));
+
+    // Mantener referencias actualizadas para la caja de selección
+    useEffect(() => {
+        itemsRef.current = items;
+        foldersRef.current = folders;
+    }, [items, folders]);
+
+    // MOTOR DE LA CAJA DE SELECCIÓN (MARQUEE TOOL)
+    useEffect(() => {
+        if (!selectionBox?.active) return;
+
+        const handlePointerMove = (e) => {
+            const container = document.getElementById('canvas-container');
+            if (container) {
+                const rect = container.getBoundingClientRect();
+                const currentX = (e.clientX - rect.left) / zoom;
+                const currentY = (e.clientY - rect.top) / zoom;
+                setSelectionBox(prev => ({ ...prev, currentX, currentY }));
+            }
+        };
+
+        const handlePointerUp = () => {
+            setSelectionBox(prev => {
+                if (!prev) return null;
+                const minX = Math.min(prev.startX, prev.currentX);
+                const maxX = Math.max(prev.startX, prev.currentX);
+                const minY = Math.min(prev.startY, prev.currentY);
+                const maxY = Math.max(prev.startY, prev.currentY);
+
+                // Si la caja es lo suficientemente grande, seleccionamos los elementos
+                if (maxX - minX > 10 && maxY - minY > 10) {
+                    const newSelectedIds = [];
+                    const currentItems = itemsRef.current;
+                    const currentFolders = foldersRef.current;
+
+                    currentItems.forEach(item => {
+                        const itemFolder = currentFolders.find(f => f.id === item.folderId);
+                        // Ignorar bloqueados u ocultos
+                        if (itemFolder?.isHidden || itemFolder?.isGrouped || itemFolder?.isLocked || item.isLocked) return;
+
+                        const iW = item.width || 100;
+                        const iH = item.height || iW;
+
+                        // Chequeo de colisión
+                        if (item.x < maxX && item.x + iW > minX && item.y < maxY && item.y + iH > minY) {
+                            newSelectedIds.push(item.id);
+                        }
+                    });
+                    setSelectedItemIds(newSelectedIds);
+                }
+                return null;
+            });
+        };
+
+        window.addEventListener('pointermove', handlePointerMove);
+        window.addEventListener('pointerup', handlePointerUp);
+        return () => {
+            window.removeEventListener('pointermove', handlePointerMove);
+            window.removeEventListener('pointerup', handlePointerUp);
+        };
+    }, [selectionBox?.active, zoom]);
 
     const handlePrint = () => window.print();
 
     const tourLazos = activePhotos.filter(p => p.type === 'lazo_guia').sort((a, b) => (a.tourOrder || 0) - (b.tourOrder || 0));
     const hasGuideLazos = tourLazos.length > 0;
+
+    const updateMultiplePhotos = useCallback(async (updatesArray) => {
+        try {
+            const promises = updatesArray.map(update =>
+                setDoc(doc(db, 'artifacts', appId, 'photos', update.id), update.data, { merge: true })
+            );
+            await Promise.all(promises);
+        } catch (error) { if (error.code === 'permission-denied') setDbError('permissions'); }
+    }, [user]);
+
+    const handleBringGroupToFront = useCallback(async (folderItems) => {
+        if (!folderItems || folderItems.length === 0) return;
+        const maxZ = activePhotos.length > 0 ? Math.max(...activePhotos.map(p => p.zIndex || 0)) : 0;
+        const updates = folderItems.map((item, index) => ({
+            id: item.id,
+            data: { zIndex: maxZ + index + 1 }
+        }));
+        await updateMultiplePhotos(updates);
+    }, [activePhotos, updateMultiplePhotos]);
 
     const playTour = () => {
         if (tourStatus === 'idle') {
@@ -354,7 +651,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
     }, [user]);
 
     const confirmDeletePhoto = async () => {
-        try { await deleteDoc(doc(db, 'artifacts', appId, 'photos', deletePhotoId)); setDeletePhotoId(null); setSelectedItemId(null); }
+        try { await deleteDoc(doc(db, 'artifacts', appId, 'photos', deletePhotoId)); setDeletePhotoId(null); setSelectedItemIds([]); }
         catch (error) { if (error.code === 'permission-denied') setDbError('permissions'); }
     };
 
@@ -362,7 +659,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
         try {
             const newFolderRef = doc(collection(db, 'artifacts', appId, 'photos'));
             await setDoc(newFolderRef, {
-                albumId: activeAlbum.id, type: 'folder', content: 'Nueva Carpeta', color: '#3b82f6', createdAt: Date.now()
+                albumId: activeAlbum.id, type: 'folder', content: 'Nueva Carpeta', color: '#3b82f6', createdAt: Date.now(), isGrouped: false, isHidden: false, isLocked: false
             });
         } catch (error) { if (error.code === 'permission-denied') setDbError('permissions'); }
     };
@@ -399,14 +696,13 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                 payload.tourVisible = false;
             }
             await setDoc(newLazoRef, payload);
-            setSelectedItemId(newLazoRef.id);
+            setSelectedItemIds([newLazoRef.id]);
         } catch (err) { if (err.code === 'permission-denied') setDbError('permissions'); }
 
         setDrawingLazoType(null);
         setLazoPoints([]);
     };
 
-    // FUNCIONES AUXILIARES PARA MANEJAR LA ROTACIÓN
     const handleRotateAdd = (deg) => {
         setStickerRotation(prev => {
             let next = prev + deg;
@@ -451,7 +747,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                     const { startX, startY } = getCenterCoords(400);
                     const newStickerRef = doc(collection(db, 'artifacts', appId, 'photos'));
                     await setDoc(newStickerRef, { albumId: activeAlbum.id, ...drawingData, x: startX, y: startY, width: 400, zIndex: maxZ + 1, isLocked: false, folderId: null });
-                    setSelectedItemId(newStickerRef.id);
+                    setSelectedItemIds([newStickerRef.id]);
                 }
                 setStickerModalType(null); setEditingStickerId(null); setShowStickerMenu(false);
             } catch (error) { if (error.code === 'permission-denied') setDbError('permissions'); }
@@ -470,7 +766,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
         const stickerData = {
             type, content: contentToSave, url: stickerInputUrl,
             bgColor: stickerBgColor, borderColor: stickerBorderColor, textColor: stickerTextColor,
-            isBold: stickerIsBold, isItalic: stickerIsItalic, rotation: stickerRotation,
+            isBold: stickerIsBold, isItalic: stickerIsItalic, rotation: stickerRotation, fontSize: stickerFontSize,
             ...(type === 'date' ? { rawDate: stickerDate } : {}),
             ...(type === 'animated' ? { animationStyle: animStyle } : {})
         };
@@ -482,7 +778,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                 const { startX, startY } = getCenterCoords(width);
                 const newStickerRef = doc(collection(db, 'artifacts', appId, 'photos'));
                 await setDoc(newStickerRef, { albumId: activeAlbum.id, ...stickerData, x: startX, y: startY, width, zIndex: maxZ + 1, isLocked: false, folderId: null });
-                setSelectedItemId(newStickerRef.id);
+                setSelectedItemIds([newStickerRef.id]);
             }
             setStickerModalType(null); setEditingStickerId(null); setShowStickerMenu(false);
         } catch (error) { if (error.code === 'permission-denied') setDbError('permissions'); }
@@ -498,7 +794,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                 x: startX, y: startY, width: 120, rotation: Math.floor(Math.random() * 20) - 10,
                 zIndex: maxZ + 1, animationStyle: isAnim ? 'animate-bounce' : null, isLocked: false, folderId: null
             });
-            setSelectedItemId(newEmojiRef.id);
+            setSelectedItemIds([newEmojiRef.id]);
             setShowStickerMenu(false);
         } catch (error) { if (error.code === 'permission-denied') setDbError('permissions'); }
     };
@@ -521,6 +817,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
         if (photoToEdit) {
             setEditingStickerId(photoToEdit.id);
             setStickerRotation(photoToEdit.rotation || 0);
+            setStickerFontSize(photoToEdit.fontSize || 16);
 
             if (type === 'image' || !type) {
                 setPhotoDescText(photoToEdit.description || "");
@@ -564,7 +861,8 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
             }
         } else {
             setEditingStickerId(null);
-            setStickerRotation(Math.floor(Math.random() * 20) - 10);
+            setStickerRotation(0);
+            setStickerFontSize(16);
             setStickerInputText(""); setStickerInputUrl("");
             setStickerBgColor(type === 'postit' ? '#fef08a' : (type === 'link' || type === 'music' || type === 'counter') ? '#3b82f6' : type === 'drawing' ? '#1f2937' : '#ffffff');
             setStickerBorderColor(type === 'location' ? '#f43f5e' : (type === 'link' || type === 'music' || type === 'counter') ? '#ffffff' : '#e5e7eb');
@@ -579,7 +877,6 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
         setShowStickerMenu(false);
     };
 
-    // NUEVO: PANEL DE CONTROLES DE ROTACIÓN
     const renderRotationControls = () => (
         <div className="bg-stone-50 p-4 rounded-xl border border-stone-200 mb-6">
             <div className="flex items-center justify-between mb-3">
@@ -599,6 +896,12 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
     const renderStyleControls = () => (
         <div className="bg-stone-50 p-4 rounded-xl border border-stone-200 mb-6">
             <p className="text-xs font-bold text-stone-500 uppercase tracking-wider mb-3">Estilo Visual</p>
+            <div className="mb-4">
+                <label className="flex justify-between text-xs font-bold text-stone-500 uppercase tracking-wider mb-2">
+                    <span>Tamaño de Letra</span><span>{stickerFontSize}px</span>
+                </label>
+                <input type="range" min="10" max="120" value={stickerFontSize} onChange={(e) => setStickerFontSize(parseInt(e.target.value))} className="w-full accent-blue-600 cursor-pointer" />
+            </div>
             <div className="flex flex-wrap items-center gap-4 mb-3">
                 <label className="flex items-center gap-2 text-sm font-medium cursor-pointer"><input type="color" value={stickerBgColor} onChange={e => setStickerBgColor(e.target.value)} className="w-8 h-8 p-0 border-0 rounded hover:scale-110 transition-transform" /> Fondo</label>
                 <label className="flex items-center gap-2 text-sm font-medium cursor-pointer"><input type="color" value={stickerBorderColor} onChange={e => setStickerBorderColor(e.target.value)} className="w-8 h-8 p-0 border-0 rounded hover:scale-110 transition-transform" /> Contorno</label>
@@ -611,20 +914,21 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
         </div>
     );
 
-    const folders = activePhotos.filter(p => p.type === 'folder').sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
-    const items = activePhotos.filter(p => p.type !== 'folder').sort((a, b) => (b.zIndex || 0) - (a.zIndex || 0));
-
     const renderLayerItem = (p) => {
         const isEditable = !p.type || ['image', 'postit', 'date', 'link', 'music', 'counter', 'location', 'lazo', 'lazo_guia', 'drawing', 'animated', 'custom_sticker'].includes(p.type);
+        const pFolder = folders.find(f => f.id === p.folderId);
+        const isGroupedMember = pFolder && pFolder.isGrouped;
+        const visuallyHidden = pFolder?.isHidden || p.isHidden;
+
         return (
-            <div key={p.id} className="flex flex-col">
+            <div key={p.id} className={`flex flex-col ${visuallyHidden ? 'opacity-40' : ''}`}>
                 <div
                     draggable
                     onDragStart={(e) => { e.dataTransfer.setData('itemId', p.id); }}
-                    onClick={() => setSelectedItemId(p.id)}
-                    className={`flex items-center justify-between p-2 rounded-lg text-sm group cursor-grab active:cursor-grabbing transition-all border ${selectedItemId === p.id ? 'bg-indigo-50 border-indigo-300 shadow-sm scale-[1.02]' : 'bg-white border-transparent hover:border-stone-200'} ${p.isLocked ? 'opacity-60 grayscale' : ''}`}
+                    onClick={() => setSelectedItemIds([isGroupedMember ? pFolder.id : p.id])}
+                    className={`flex items-center justify-between p-2 rounded-lg text-sm group cursor-grab active:cursor-grabbing transition-all border ${selectedItemIds.includes(isGroupedMember ? pFolder.id : p.id) ? 'bg-indigo-50 border-indigo-300 shadow-sm scale-[1.02]' : 'bg-white border-transparent hover:border-stone-200'} ${(p.isLocked || pFolder?.isLocked) ? 'grayscale' : ''}`}
                 >
-                    <span className={`truncate w-24 font-medium text-[11px] pointer-events-none ${selectedItemId === p.id ? 'text-indigo-800' : 'text-stone-600'}`}>
+                    <span className={`truncate w-24 font-medium text-[11px] pointer-events-none ${selectedItemIds.includes(isGroupedMember ? pFolder.id : p.id) ? 'text-indigo-800' : 'text-stone-600'}`}>
                         {p.type === 'postit' ? 'Post-it' : p.type === 'date' ? 'Fecha' : p.type === 'location' ? 'Ubicación' : p.type === 'link' ? 'Enlace' : p.type === 'music' ? 'Canción' : p.type === 'counter' ? 'Contador' : p.type === 'lazo' ? 'Lazo' : p.type === 'lazo_guia' ? 'Lazo Guía' : p.type === 'drawing' ? 'Dibujo Libre' : p.type === 'animated' ? 'Animación' : p.type === 'custom_sticker' ? 'Pegatina PNG' : p.type === 'emoji' ? p.content : 'Imagen'}
                     </span>
                     <div className="flex gap-0.5 opacity-40 group-hover:opacity-100 transition-opacity">
@@ -653,6 +957,23 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
         );
     };
 
+    // Separamos los items para renderizar
+    const visibleFolders = folders.filter(f => !f.isHidden);
+    const groupedFolders = visibleFolders.filter(f => f.isGrouped);
+
+    const freeItems = items.filter(i => {
+        if (!i.folderId) return true;
+        const pFolder = folders.find(f => f.id === i.folderId);
+        if (pFolder?.isHidden || pFolder?.isGrouped) return false;
+        return true;
+    });
+
+    const multiSelectedItems = freeItems.filter(i => selectedItemIds.includes(i.id));
+    const renderableFreeItems = freeItems.filter(i => {
+        if (multiSelectedItems.length > 1 && selectedItemIds.includes(i.id)) return false;
+        return true;
+    });
+
     return (
         <div className="h-screen flex flex-col font-sans overflow-hidden bg-stone-100 relative">
             <CustomAnimations />
@@ -660,7 +981,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
             {/* HEADER CONTROLS */}
             <div className="absolute top-6 left-6 right-6 z-[99999] flex justify-between gap-4 pointer-events-none print:hidden">
                 <div className="bg-white/90 backdrop-blur-md px-5 py-3 rounded-2xl shadow-sm border border-white flex items-center gap-5 pointer-events-auto">
-                    <button onClick={() => { setCurrentView('dashboard'); setActiveAlbumId(null); setSelectedItemId(null); stopTour(); }} className="p-2 text-stone-500 hover:bg-stone-100 rounded-full hover:scale-110 active:scale-95 transition-all"><ArrowLeft size={22} /></button>
+                    <button onClick={() => { setCurrentView('dashboard'); setActiveAlbumId(null); setSelectedItemIds([]); stopTour(); }} className="p-2 text-stone-500 hover:bg-stone-100 rounded-full hover:scale-110 active:scale-95 transition-all"><ArrowLeft size={22} /></button>
                     <div><h2 className="text-xl font-bold font-serif text-stone-800">{activeAlbum?.name}</h2></div>
                 </div>
                 <div className="flex items-center gap-3 pointer-events-auto">
@@ -700,20 +1021,17 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                                         </div>
                                         <div className="border-t border-stone-100 my-1"></div>
                                         <div className="flex gap-1 px-1 py-2">
-                                            <button onClick={() => { setDrawingLazoType('lazo'); setShowStickerMenu(false); setSelectedItemId(null); }} className="flex-1 flex flex-col items-center justify-center gap-1 p-2 bg-stone-800 text-white rounded-xl text-[10px] font-bold hover:scale-[1.02] active:scale-95 transition-all shadow-md"><PenTool size={16} /> Lazo Decorativo</button>
-                                            <button onClick={() => { setDrawingLazoType('lazo_guia'); setShowStickerMenu(false); setSelectedItemId(null); }} className="flex-1 flex flex-col items-center justify-center gap-1 p-2 bg-blue-600 text-white rounded-xl text-[10px] font-bold hover:scale-[1.02] active:scale-95 transition-all shadow-md"><Navigation size={16} /> Lazo Guía (Tour)</button>
+                                            <button onClick={() => { setDrawingLazoType('lazo'); setShowStickerMenu(false); setSelectedItemIds([]); }} className="flex-1 flex flex-col items-center justify-center gap-1 p-2 bg-stone-800 text-white rounded-xl text-[10px] font-bold hover:scale-[1.02] active:scale-95 transition-all shadow-md"><PenTool size={16} /> Lazo Decorativo</button>
+                                            <button onClick={() => { setDrawingLazoType('lazo_guia'); setShowStickerMenu(false); setSelectedItemIds([]); }} className="flex-1 flex flex-col items-center justify-center gap-1 p-2 bg-blue-600 text-white rounded-xl text-[10px] font-bold hover:scale-[1.02] active:scale-95 transition-all shadow-md"><Navigation size={16} /> Lazo Guía (Tour)</button>
                                             <button onClick={() => openStickerModal('drawing')} className="flex-1 flex flex-col items-center justify-center gap-1 p-2 bg-purple-600 text-white rounded-xl text-[10px] font-bold hover:scale-[1.02] active:scale-95 transition-all shadow-md"><Brush size={16} /> Dibujo Libre</button>
                                         </div>
                                         <div className="px-1 pb-2">
                                             <label className="flex items-center justify-center gap-2 w-full p-2 bg-emerald-100 text-emerald-800 rounded-xl text-xs font-bold hover:bg-emerald-200 cursor-pointer transition-all shadow-sm">
-                                                {isUploading ? <Loader2 size={16} className="animate-spin" /> : <UploadCloud size={16} />}
-                                                Subir PNG (Animable)
+                                                {isUploading ? <Loader2 size={16} className="animate-spin" /> : <UploadCloud size={16} />} Subir PNG (Animable)
                                                 <input type="file" multiple accept="image/png, image/gif, image/webp" className="hidden" onChange={handlePngUpload} disabled={isUploading} />
                                             </label>
                                         </div>
-
                                         <div className="border-t border-stone-100 my-1"></div>
-
                                         <div className="flex flex-col gap-4 px-3 py-3 max-h-80 overflow-y-auto">
                                             <div><p className="text-[10px] font-bold text-blue-500 uppercase tracking-wider mb-2">Animaciones (Solo en Recorrido)</p><div className="flex flex-wrap gap-2">{['✨', '💖', '🔥', '🦋', '🫧', '🎉', '🕊️', '☄️'].map(e => <button key={e} onClick={() => handleAddEmoji(e, true)} className="text-xl hover:scale-125 active:scale-95 transition-transform" title="Añadir animación">{e}</button>)}</div></div>
                                             <div><p className="text-[10px] font-bold text-stone-400 uppercase tracking-wider mb-2">Pines y Papelería</p><div className="flex flex-wrap gap-2">{['📌', '📍', '📎', '🖇️', '🏷️', '🩹', '📏', '✂️', '🗑️', '📋'].map(e => <button key={e} onClick={() => handleAddEmoji(e)} className="text-xl hover:scale-125 active:scale-95 transition-transform" title="Añadir al lienzo">{e}</button>)}</div></div>
@@ -735,7 +1053,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                             </label>
                         </>
                     )}
-                    <button onClick={() => { setIsEditMode(!isEditMode); setSelectedItemId(null); setShowBgMenu(false); setShowLayers(false); setShowStickerMenu(false); setDrawingLazoType(null); stopTour(); }} className={`${btnClass} bg-white text-stone-700 border hover:bg-stone-50`}>
+                    <button onClick={() => { setIsEditMode(!isEditMode); setSelectedItemIds([]); setShowBgMenu(false); setShowLayers(false); setShowStickerMenu(false); setDrawingLazoType(null); stopTour(); }} className={`${btnClass} bg-white text-stone-700 border hover:bg-stone-50`}>
                         {isEditMode ? <Check size={20} /> : <Edit3 size={20} />} {isEditMode ? 'Terminar Edición' : 'Editar Álbum'}
                     </button>
                 </div>
@@ -770,7 +1088,6 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                             </div>
                         </div>
                     )}
-
                     <div className="flex bg-white/90 backdrop-blur-md rounded-2xl shadow-xl border border-blue-200 overflow-hidden pointer-events-auto animate-in slide-in-from-left-8">
                         <div className="bg-blue-600 text-white px-4 py-3 flex items-center justify-center font-bold text-sm tracking-wider uppercase">Tour</div>
                         <button onClick={playTour} disabled={tourStatus === 'playing' || tourStatus === 'message'} className="p-3 hover:bg-blue-50 text-blue-600 disabled:opacity-30 disabled:hover:bg-transparent transition-colors" title="Reproducir"><Play size={20} fill="currentColor" /></button>
@@ -791,7 +1108,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                 </div>
             )}
 
-            {/* MENÚ DE CAPAS CON CARPETAS (DRAG & DROP) */}
+            {/* MENÚ DE CAPAS CON CARPETAS Y HERRAMIENTAS NUEVAS */}
             {showLayers && isEditMode && (
                 <div className="absolute top-24 right-6 w-80 bg-white/95 backdrop-blur-md rounded-2xl shadow-xl p-4 z-[99999] border border-stone-200 print:hidden flex flex-col max-h-[80vh]">
                     <div className="flex items-center justify-between mb-4">
@@ -808,7 +1125,7 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                         {folders.map(folder => (
                             <div
                                 key={folder.id}
-                                className={`border rounded-xl overflow-hidden shadow-sm transition-all duration-200 ${dragOverFolderId === folder.id ? 'border-blue-500 bg-blue-50 scale-[1.02] ring-2 ring-blue-500/20' : 'border-stone-200'}`}
+                                className={`border rounded-xl overflow-hidden shadow-sm transition-all duration-200 ${dragOverFolderId === folder.id ? 'border-blue-500 bg-blue-50 scale-[1.02] ring-2 ring-blue-500/20' : 'border-stone-200'} ${folder.isHidden ? 'opacity-60' : ''}`}
                                 onDragOver={(e) => { e.preventDefault(); setDragOverFolderId(folder.id); }}
                                 onDragLeave={() => setDragOverFolderId(null)}
                                 onDrop={(e) => {
@@ -822,21 +1139,27 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                                 }}
                             >
                                 <div
-                                    className="bg-stone-50 hover:bg-stone-100 p-2.5 flex justify-between items-center cursor-pointer transition-colors"
+                                    className={`p-2.5 flex justify-between items-center cursor-pointer transition-colors ${folder.isGrouped ? 'bg-indigo-50' : 'bg-stone-50 hover:bg-stone-100'}`}
                                     onClick={() => setOpenFolders(prev => ({ ...prev, [folder.id]: !prev[folder.id] }))}
                                 >
                                     <div className="flex items-center gap-2">
                                         <Folder size={16} fill={folder.color} color={folder.color} />
-                                        <span className="font-bold text-xs text-stone-700 truncate w-32">{folder.content}</span>
+                                        <span className={`font-bold text-xs truncate w-20 ${folder.isGrouped ? 'text-indigo-800' : 'text-stone-700'}`}>{folder.content}</span>
                                     </div>
-                                    <div className="flex items-center gap-1">
-                                        <button onClick={(e) => { e.stopPropagation(); openStickerModal('folder', folder); }} className="p-1 hover:bg-blue-100 text-blue-600 rounded transition-colors"><Edit2 size={12} /></button>
-                                        <button onClick={(e) => { e.stopPropagation(); setDeletePhotoId(folder.id); }} className="p-1 hover:bg-rose-100 text-rose-600 rounded transition-colors"><Trash2 size={12} /></button>
-                                        <div className={`transform transition-transform ${openFolders[folder.id] ? 'rotate-180' : ''}`}><ChevronUp size={16} className="text-stone-400" /></div>
+                                    <div className="flex items-center gap-0.5">
+                                        <button onClick={(e) => { e.stopPropagation(); updatePhoto(folder.id, { isHidden: !folder.isHidden }); }} className={`p-1 hover:bg-stone-200 rounded transition-colors ${folder.isHidden ? 'text-stone-300' : 'text-stone-600'}`} title={folder.isHidden ? 'Mostrar Carpeta' : 'Ocultar Carpeta'}>
+                                            {folder.isHidden ? <EyeOff size={14} /> : <Eye size={14} />}
+                                        </button>
+                                        <button onClick={(e) => { e.stopPropagation(); updatePhoto(folder.id, { isLocked: !folder.isLocked }); }} className={`p-1 hover:bg-stone-200 rounded transition-colors ${folder.isLocked ? 'text-rose-500' : 'text-stone-400'}`} title={folder.isLocked ? 'Desbloquear Carpeta' : 'Bloquear Carpeta'}>
+                                            {folder.isLocked ? <Lock size={14} /> : <Unlock size={14} />}
+                                        </button>
+                                        <button onClick={(e) => { e.stopPropagation(); updatePhoto(folder.id, { isGrouped: !folder.isGrouped }); }} className={`p-1 hover:bg-indigo-200 rounded transition-colors ${folder.isGrouped ? 'text-indigo-600 bg-indigo-200' : 'text-stone-400'}`} title={folder.isGrouped ? 'Desagrupar Contenido' : 'Agrupar Contenido'}><Layers size={14} /></button>
+                                        <button onClick={(e) => { e.stopPropagation(); openStickerModal('folder', folder); }} className="p-1 hover:bg-blue-100 text-blue-600 rounded transition-colors" title="Editar"><Edit2 size={12} /></button>
+                                        <button onClick={(e) => { e.stopPropagation(); setDeletePhotoId(folder.id); }} className="p-1 hover:bg-rose-100 text-rose-600 rounded transition-colors" title="Eliminar"><Trash2 size={12} /></button>
                                     </div>
                                 </div>
                                 {openFolders[folder.id] && (
-                                    <div className="bg-stone-100 p-1.5 flex flex-col gap-1 border-t border-stone-200 shadow-inner">
+                                    <div className={`p-1.5 flex flex-col gap-1 border-t shadow-inner ${folder.isGrouped ? 'bg-indigo-50/50 border-indigo-100' : 'bg-stone-100 border-stone-200'}`}>
                                         {items.filter(i => i.folderId === folder.id).map(renderLayerItem)}
                                         {items.filter(i => i.folderId === folder.id).length === 0 && <p className="text-[10px] text-stone-400 text-center py-2 italic pointer-events-none">Carpeta vacía</p>}
                                     </div>
@@ -855,8 +1178,8 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                                 if (itemId) updatePhoto(itemId, { folderId: null });
                             }}
                         >
-                            {items.filter(i => !i.folderId).map(renderLayerItem)}
-                            {items.filter(i => !i.folderId).length === 0 && <p className="text-[10px] text-stone-400 text-center py-4 italic pointer-events-none">Arrastra objetos aquí para sacarlos</p>}
+                            {freeItems.map(renderLayerItem)}
+                            {freeItems.length === 0 && <p className="text-[10px] text-stone-400 text-center py-4 italic pointer-events-none">Arrastra objetos aquí para sacarlos</p>}
                         </div>
                     </div>
                 </div>
@@ -868,11 +1191,24 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                 className={`flex-1 relative w-full overflow-auto transition-colors duration-500 ${bgClass} print:bg-white print:overflow-visible`}
             >
                 <div
-                    className="w-[4000px] h-[3000px] origin-top-left transition-transform duration-500 ease-out"
+                    id="canvas-container"
+                    className="w-[4000px] h-[3000px] origin-top-left transition-transform duration-500 ease-out relative cursor-crosshair"
                     style={{ transform: `scale(${zoom})` }}
-                    onPointerDown={() => isEditMode && !drawingLazoType && setSelectedItemId(null)}
+                    onPointerDown={(e) => {
+                        if (isEditMode && !drawingLazoType) {
+                            if (e.target.id === 'canvas-bg') {
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                const startX = (e.clientX - rect.left) / zoom;
+                                const startY = (e.clientY - rect.top) / zoom;
+                                setSelectionBox({ active: true, startX, startY, currentX: startX, currentY: startY });
+                                setSelectedItemIds([]);
+                            }
+                        }
+                    }}
                 >
-                    {/* MODO FANTASMA AL DIBUJAR LAZO */}
+                    {/* Fondo auxiliar para atrapar clics de selección */}
+                    <div id="canvas-bg" className="absolute inset-0 z-0 pointer-events-auto" />
+
                     {drawingLazoType && (
                         <div className="absolute inset-0 z-[8000] cursor-crosshair" onPointerDown={(e) => { const rect = e.currentTarget.getBoundingClientRect(); setLazoPoints(prev => [...prev, { x: (e.clientX - rect.left) / zoom, y: (e.clientY - rect.top) / zoom }]); }}>
                             <svg className="w-full h-full pointer-events-none drop-shadow-md">
@@ -887,19 +1223,71 @@ export default function ScrapbookCanvas({ user, activeAlbum, activePhotos, setCu
                         </div>
                     )}
 
-                    <div className="w-full h-full relative pointer-events-none">
-                        <div className="pointer-events-auto w-full h-full">
-                            {activePhotos.map(photo => (
+                    <div className="absolute inset-0 w-full h-full pointer-events-none z-10">
+                        {/* RENDERIZADO DE CARPETAS AGRUPADAS */}
+                        {groupedFolders.map(folder => {
+                            const folderItems = items.filter(i => i.folderId === folder.id);
+                            return (
+                                <InteractableGroup
+                                    key={folder.id} folder={folder} items={folderItems}
+                                    updateMultiplePhotos={updateMultiplePhotos}
+                                    isEditMode={isEditMode}
+                                    isSelected={selectedItemIds.includes(folder.id)}
+                                    onSelect={() => setSelectedItemIds([folder.id])}
+                                    onBringToFront={() => handleBringGroupToFront(folderItems)}
+                                    zoom={zoom}
+                                    isLocked={folder.isLocked}
+                                />
+                            );
+                        })}
+
+                        {/* GRUPO TEMPORAL DE SELECCIÓN MÚLTIPLE */}
+                        {multiSelectedItems.length > 1 && (
+                            <InteractableGroup
+                                folder={{ id: 'multi-select', content: 'Selección Múltiple' }}
+                                items={multiSelectedItems}
+                                updateMultiplePhotos={updateMultiplePhotos}
+                                isEditMode={isEditMode}
+                                isSelected={true}
+                                onSelect={() => { }}
+                                onBringToFront={() => handleBringGroupToFront(multiSelectedItems)}
+                                zoom={zoom}
+                                isLocked={false}
+                            />
+                        )}
+
+                        {/* RENDERIZADO DE OBJETOS LIBRES */}
+                        {renderableFreeItems.map(photo => {
+                            const pFolder = folders.find(f => f.id === photo.folderId);
+                            const isFolderLocked = pFolder?.isLocked;
+                            const effectivePhoto = { ...photo, isLocked: photo.isLocked || isFolderLocked };
+
+                            return (
                                 <InteractablePhoto
-                                    key={photo.id} photo={photo} updatePhoto={updatePhoto} deletePhoto={(id) => { setDeletePhotoId(id); setSelectedItemId(null); }}
+                                    key={photo.id} photo={effectivePhoto} updatePhoto={updatePhoto} deletePhoto={(id) => { setDeletePhotoId(id); setSelectedItemIds([]); }}
                                     isEditMode={isEditMode && !drawingLazoType}
-                                    isSelected={selectedItemId === photo.id} onSelect={() => setSelectedItemId(photo.id)} onBringToFront={bringToFront} onClickView={(p) => setSelectedPhotoForDesc(p)} onEditClick={(p) => openStickerModal(p.type, p)}
+                                    isSelected={selectedItemIds.includes(photo.id)}
+                                    onSelect={() => setSelectedItemIds([photo.id])}
+                                    onBringToFront={bringToFront} onClickView={(p) => setSelectedPhotoForDesc(p)} onEditClick={(p) => openStickerModal(p.type, p)}
                                     zoom={zoom} isTourPlaying={tourStatus === 'playing'}
                                     isDrawingMode={!!drawingLazoType}
                                 />
-                            ))}
-                        </div>
+                            )
+                        })}
                     </div>
+
+                    {/* CAJA DE SELECCIÓN MÚLTIPLE VISUAL (DENTRO DEL CANVAS PARA QUE ESCALE CON EL ZOOM) */}
+                    {selectionBox?.active && (
+                        <div
+                            className="absolute border-2 border-blue-500 bg-blue-500/20 pointer-events-none z-[9999] rounded-sm"
+                            style={{
+                                left: Math.min(selectionBox.startX, selectionBox.currentX),
+                                top: Math.min(selectionBox.startY, selectionBox.currentY),
+                                width: Math.abs(selectionBox.currentX - selectionBox.startX),
+                                height: Math.abs(selectionBox.currentY - selectionBox.startY),
+                            }}
+                        />
+                    )}
                 </div>
             </div>
 
