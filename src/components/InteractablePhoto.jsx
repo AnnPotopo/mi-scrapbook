@@ -23,7 +23,7 @@ const getLazoPath = (pts, isSmooth) => {
     return d;
 };
 
-export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isEditMode, isSelected, onSelect, onBringToFront, onClickView, onEditClick, zoom = 1, isTourPlaying = false, isDrawingMode = false, onGroupDragStart = null }) {
+export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isEditMode, isSelected, onSelect, onClickView, onEditClick, zoom = 1, isTourPlaying = false, isDrawingMode = false, onGroupDragStart = null }) {
     const [interaction, setInteraction] = useState(null);
     const [localTransform, setLocalTransform] = useState({
         x: photo.x, y: photo.y, width: photo.width, height: photo.height, rotation: photo.rotation
@@ -49,7 +49,7 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
         e.stopPropagation();
         e.preventDefault();
 
-        onBringToFront(photo.id);
+        // Ya no enviamos la foto al frente automáticamente. Conserva su Z-Index real.
         if (onSelect) onSelect();
 
         setInteraction(type);
@@ -170,6 +170,9 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
         ? { animation: `anim-${photo.animType} ${photo.animDuration || 3}s ${photo.animType === 'spin' ? 'linear' : 'ease-in-out'} ${photo.animDirection || 'alternate'} infinite` }
         : {};
 
+    // FORZAMOS A QUE EL Z-INDEX SEA UN NÚMERO ENTERO (Math.round) PARA QUE CSS LO RESPETE
+    const zIndexEntero = Math.round(photo.zIndex || 1);
+
     return (
         <div
             ref={containerRef}
@@ -178,7 +181,7 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                 width: `${localTransform.width}px`,
                 height: localTransform.height ? `${localTransform.height}px` : 'auto',
                 transform: `rotate(${localTransform.rotation}deg)`,
-                zIndex: photo.zIndex || 1, touchAction: 'none',
+                zIndex: zIndexEntero, touchAction: 'none',
                 pointerEvents: interactionEvents
             }}
             className={`group flex flex-col ${isEditMode && !photo.isLocked && !isDrawingMode && !onGroupDragStart ? 'cursor-move' : (onGroupDragStart ? 'cursor-move' : '')} ${!isEditMode && isLinkable ? 'cursor-pointer hover:scale-105 active:scale-95 transition-all duration-200' : (!isEditMode && (!photo.type || photo.type === 'image') ? 'cursor-pointer hover:scale-[1.02] transition-transform duration-300' : '')} ${lockedClass}`}
@@ -205,6 +208,7 @@ export default function InteractablePhoto({ photo, updatePhoto, deletePhoto, isE
                 </div>
             )}
 
+            {/* FOTOGRAFÍA */}
             {(!photo.type || photo.type === 'image') && (
                 <div style={{ backgroundColor: frameColor }} className={`w-full h-full p-3 pb-12 rounded-sm border relative flex flex-col transition-all duration-300 ${isEditMode && interaction === 'drag' ? 'border-amber-300 shadow-2xl scale-105' : 'border-stone-200 shadow-xl group-hover:shadow-2xl'}`}>
                     {tapeStyle === 'top' && <div className="absolute -top-3 left-1/2 -translate-x-1/2 w-16 h-6 bg-white/40 backdrop-blur-md border border-white/40 shadow-sm rounded-sm transform rotate-2 z-10 opacity-80 print:opacity-100" style={{ backgroundImage: tapeGradient }}></div>}
